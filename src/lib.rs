@@ -59,13 +59,13 @@ pub fn run() {
                 let cy = event.client_y();
                 LAST_MOUSE.with(|p| {
                     let (lx, ly) = *p.borrow();
-                    let dx = (cx - lx) as f64;
-                    let dy = (cy - ly) as f64;
+                    let dx = (cy - ly) as f64;
+                    let dy = (cx - lx) as f64;
                     if dx != 0.0 || dy != 0.0 {
                         renderer::ORBIT_DELTA.with(|m| {
                             let mut delta = m.borrow_mut();
-                            delta.0 += dx;
-                            delta.1 += dy;
+                            delta.0 += dy;
+                            delta.1 += dx;
                         });
                         *p.borrow_mut() = (cx, cy);
                     }
