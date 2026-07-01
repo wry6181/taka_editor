@@ -17,10 +17,19 @@ impl Renderer {
     pub fn resize(&mut self, width: u32, height: u32) {
         self.inner.resize(width, height);
     }
+
+    pub fn camera_orbit(&mut self, dx: f64, dy: f64) {
+        self.inner.camera_orbit(dx, dy);
+    }
+
+    pub fn camera_zoom(&mut self, delta: f64) {
+        self.inner.camera_zoom(delta);
+    }
 }
 
 thread_local! {
     pub static RENDERER: RefCell<Option<Renderer>> = const { RefCell::new(None) };
+    pub static ORBIT_DELTA: RefCell<(f64, f64)> = RefCell::new((0.0, 0.0));
 }
 
 pub fn resize_renderer(width: u32, height: u32) {
@@ -63,9 +72,18 @@ pub fn start_render_loop() {
         RENDERER.with(|rc| {
             let mut renderer = rc.borrow_mut();
             if let Some(r) = renderer.as_mut() {
+                ORBIT_DELTA.with(|m| {
+                    let mut delta = m.borrow_mut();
+                    if delta.0 != 0.0 || delta.1 != 0.0 {
+                        r.camera_orbit(delta.0, delta.1);
+                        *delta = (0.0, 0.0);
+                    }
+                });
+
                 r.render();
             }
         });
+
         let window = web_sys::window().expect("no window");
         if let Some(cb) = f.borrow().as_ref() {
             window

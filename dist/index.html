@@ -3,15 +3,27 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="style.css">
+  <style>
+    html, body {
+        margin: 0; padding: 0;
+        width: 100%; height: 100%;
+        overflow: hidden;
+        background: #0f0f1a;
+    }
+    #viewport {
+        display: block;
+        width: 100%;
+        height: 100%;
+    }
+  </style>
   <title>Canvas Test</title>
-<link rel="modulepreload" href="/taka_editor-a782972460dc9faf.js" crossorigin="anonymous" integrity="sha384-otaB4wI4YSNLK3qZWmZbwd9QCUTYS5fa9r3j65vcVKR9S/dcOp+ayESynYX8p9TT"><link rel="preload" href="/taka_editor-a782972460dc9faf_bg.wasm" crossorigin="anonymous" integrity="sha384-3uv8qB+gzrOlUPtEj2BVs9fLjZjM7B4PWnrl7BWTVAGNqzMuiL6oK8dlE47HUw3Y" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/taka_editor-3c9f4106a766efdd.js" crossorigin="anonymous" integrity="sha384-OBa5ZqNiqlO8nIdYtFd+IgLx83WIkgQcM16KGY7QjYoLQPQVNgLGjqgqgwwGMgaA"><link rel="preload" href="/taka_editor-3c9f4106a766efdd_bg.wasm" crossorigin="anonymous" integrity="sha384-mS5dGTN+gPbNFwaRMGEvP5cooIh1KuBKvCBXDBT0GXabNomvHsPTRudH0ENfqDkg" as="fetch" type="application/wasm"></head>
 <body>
   <canvas id="viewport"></canvas>
 
 <script type="module">
-import init, * as bindings from '/taka_editor-a782972460dc9faf.js';
-const wasm = await init({ module_or_path: '/taka_editor-a782972460dc9faf_bg.wasm' });
+import init, * as bindings from '/taka_editor-3c9f4106a766efdd.js';
+const wasm = await init({ module_or_path: '/taka_editor-3c9f4106a766efdd_bg.wasm' });
 
 
 window.wasmBindings = bindings;
