@@ -5,8 +5,10 @@ use wgpu::SurfaceTarget;
 
 use super::camera::Camera;
 use super::pass::RenderPass;
+use super::passes::grid_pass::GridPass;
 use super::passes::line_pass::LinePass;
 use super::passes::mesh_pass::MeshPass;
+use super::ray::Ray;
 
 #[derive(Debug, Default, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
@@ -34,6 +36,12 @@ pub struct WgpuRenderer {
     camera: Camera,
     mesh_pass: MeshPass,
     line_pass: LinePass,
+    grid_pass: GridPass,
+    clear_color: wgpu::Color,
+    axis_lines: Vec<(Vec3, Vec3, Vec3)>,
+    debug_ray_origin: Option<Vec3>,
+    debug_ray_dir: Option<Vec3>,
+    debug_ray_hit: Option<Vec3>,
 }
 
 impl WgpuRenderer {
@@ -114,6 +122,9 @@ impl WgpuRenderer {
         let mesh_pass = MeshPass::new(&device, &queue, config.format, &globals_bgl, globals_bind_group.clone());
         let line_pass = LinePass::new(&device, config.format, &globals_bgl, globals_bind_group.clone());
 
+        let mut grid_pass = GridPass::new(&device, config.format, &globals_bgl, globals_bind_group.clone());
+        grid_pass.set_grid(&device, &queue, 1000.0, 100, 5);
+
         let camera = Camera::new(width, height);
 
         Ok(Self {
@@ -129,6 +140,12 @@ impl WgpuRenderer {
             camera,
             mesh_pass,
             line_pass,
+            grid_pass,
+            clear_color: wgpu::Color { r: 0.24, g: 0.24, b: 0.24, a: 1.0 },
+            axis_lines: Vec::new(),
+            debug_ray_origin: None,
+            debug_ray_dir: None,
+            debug_ray_hit: None,
         })
     }
 
@@ -151,6 +168,7 @@ impl WgpuRenderer {
 
         self.mesh_pass.prepare(&self.queue, &self.camera);
         self.line_pass.prepare(&self.queue, &self.camera);
+        self.grid_pass.prepare(&self.queue, &self.camera);
 
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
@@ -171,7 +189,7 @@ impl WgpuRenderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.05, g: 0.05, b: 0.1, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(self.clear_color),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -185,6 +203,7 @@ impl WgpuRenderer {
                 multiview_mask: None,
             });
             self.mesh_pass.render(&mut rpass);
+            self.grid_pass.render(&mut rpass);
             self.line_pass.render(&mut rpass);
         }
         self.queue.submit(Some(encoder.finish()));
@@ -224,7 +243,78 @@ impl WgpuRenderer {
     }
 
     pub fn set_lines(&mut self, lines: &[(Vec3, Vec3, Vec3)]) {
-        self.line_pass.set_lines(&self.device, &self.queue, lines);
+        self.axis_lines = lines.to_vec();
+        self.flush_lines();
+    }
+
+    fn wireframe_sphere(center: Vec3, radius: f32, color: Vec3, segments: u32) -> Vec<(Vec3, Vec3, Vec3)> {
+        let mut lines = Vec::new();
+        let step = std::f32::consts::TAU / segments as f32;
+        for p in 0..3 {
+            let (ax, ay) = match p {
+                0 => (Vec3::X, Vec3::Y),
+                1 => (Vec3::X, Vec3::Z),
+                _ => (Vec3::Y, Vec3::Z),
+            };
+            for i in 0..segments {
+                let a = i as f32 * step;
+                let b = (i + 1) as f32 * step;
+                let p0 = center + (ax * a.cos() + ay * a.sin()) * radius;
+                let p1 = center + (ax * b.cos() + ay * b.sin()) * radius;
+                lines.push((p0, p1, color));
+            }
+        }
+        lines
+    }
+
+    fn flush_lines(&mut self) {
+        let mut all = self.axis_lines.clone();
+        if let (Some(origin), Some(dir)) = (self.debug_ray_origin, self.debug_ray_dir) {
+            let color = Vec3::new(1.0, 0.65, 0.0);
+            if let Some(hit) = self.debug_ray_hit {
+                all.push((origin, hit, color));
+                all.extend(Self::wireframe_sphere(hit, 0.2, color, 16));
+            } else {
+                let far = origin + dir * 100.0;
+                all.push((origin, far, color));
+            }
+        }
+        self.line_pass.set_lines(&self.device, &self.queue, &all);
+    }
+
+    pub fn raycast(&mut self, mouse_px: f64, mouse_py: f64) {
+        let view = self.camera.get_view_matrix();
+        let proj = self.camera.get_projection_matrix();
+        let inv_vp = (proj * view).inverse();
+
+        let w = self.config.width as f64;
+        let h = self.config.height as f64;
+        let ndc_x = (2.0 * mouse_px / w - 1.0) as f32;
+        let ndc_y = (1.0 - 2.0 * mouse_py / h) as f32;
+
+        let ray = Ray::from_screen(ndc_x, ndc_y, inv_vp);
+        let hit = self.mesh_pass.ray_intersect(&ray);
+
+        self.debug_ray_origin = Some(ray.origin);
+        self.debug_ray_dir = Some(ray.direction);
+        self.debug_ray_hit = hit;
+        self.flush_lines();
+    }
+
+    pub fn set_clear_color(&mut self, r: f64, g: f64, b: f64) {
+        self.clear_color = wgpu::Color { r, g, b, a: 1.0 };
+    }
+
+    pub fn set_grid(&mut self, size: f32, divisions: u32, major_every: u32) {
+        self.grid_pass.set_grid(&self.device, &self.queue, size, divisions, major_every);
+    }
+
+    pub fn canvas_width(&self) -> f64 {
+        self.config.width as f64
+    }
+
+    pub fn canvas_height(&self) -> f64 {
+        self.config.height as f64
     }
 
     pub fn get_camera_info(&self) -> Mat4 {

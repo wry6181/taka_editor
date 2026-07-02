@@ -6,6 +6,7 @@ use wgpu::util::DeviceExt;
 
 use crate::renderer::camera::Camera;
 use crate::renderer::pass::RenderPass;
+use crate::renderer::ray::Ray;
 
 const SHADER: &str = include_str!("../shaders/editor.wgsl");
 const GLB_DATA: &[u8] = include_bytes!("../../../data/gameboy.glb");
@@ -379,6 +380,8 @@ pub struct MeshPass {
     light_ubo: wgpu::Buffer,
     light_bind_group: wgpu::BindGroup,
     light_direction: Vec3,
+    mesh_positions: Vec<[f32; 3]>,
+    mesh_indices: Vec<u32>,
 }
 
 impl MeshPass {
@@ -548,6 +551,8 @@ impl MeshPass {
         let (mesh_vertices, mesh_indices, primitives) =
             load_glb_mesh(device, queue, &material_bgl, &sampler);
 
+        let mesh_positions: Vec<[f32; 3]> = mesh_vertices.iter().map(|v| v.position).collect();
+
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
             contents: bytemuck::cast_slice(&mesh_vertices),
@@ -594,11 +599,17 @@ impl MeshPass {
             light_ubo,
             light_bind_group,
             light_direction: Vec3::new(-0.25, 0.5, -0.5),
+            mesh_positions,
+            mesh_indices,
         }
     }
 
     pub fn set_light_direction(&mut self, direction: Vec3) {
         self.light_direction = direction;
+    }
+
+    pub fn ray_intersect(&self, ray: &Ray) -> Option<Vec3> {
+        ray.intersect_mesh(&self.mesh_positions, &self.mesh_indices)
     }
 }
 

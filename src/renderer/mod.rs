@@ -1,6 +1,7 @@
 mod camera;
 mod pass;
 mod passes;
+mod ray;
 mod wgpu;
 
 use std::cell::RefCell;
@@ -34,6 +35,22 @@ impl Renderer {
         self.inner.set_light_direction(glam::Vec3::new(x as f32, y as f32, z as f32));
     }
 
+    pub fn set_clear_color(&mut self, r: f64, g: f64, b: f64) {
+        self.inner.set_clear_color(r, g, b);
+    }
+
+    pub fn canvas_width(&self) -> f64 {
+        self.inner.canvas_width()
+    }
+
+    pub fn canvas_height(&self) -> f64 {
+        self.inner.canvas_height()
+    }
+
+    pub fn raycast(&mut self, px: f64, py: f64) {
+        self.inner.raycast(px, py);
+    }
+
     pub fn set_lines(&mut self, lines: &[(glam::Vec3, glam::Vec3, glam::Vec3)]) {
         self.inner.set_lines(lines);
     }
@@ -49,6 +66,38 @@ thread_local! {
     pub static ORBIT_DELTA: RefCell<(f64, f64)> = RefCell::new((0.0, 0.0));
     pub static DEBUG_OVERLAY: RefCell<Option<web_sys::Element>> = RefCell::new(None);
     static GIZMO_ELEMENT: std::cell::RefCell<Option<web_sys::Element>> = const { std::cell::RefCell::new(None) };
+    static FPS_STATE: RefCell<FpsCounter> = RefCell::new(FpsCounter::new());
+    pub static RAYCAST_PENDING: RefCell<Option<(f64, f64)>> = const { RefCell::new(None) };
+}
+
+struct FpsCounter {
+    last_time: f64,
+    frame_count: u32,
+    accumulator: f64,
+    fps: f64,
+}
+
+impl FpsCounter {
+    fn new() -> Self {
+        Self { last_time: 0.0, frame_count: 0, accumulator: 0.0, fps: 0.0 }
+    }
+
+    fn tick(&mut self, now: f64) -> f64 {
+        if self.last_time == 0.0 {
+            self.last_time = now;
+            return 0.0;
+        }
+        let dt = now - self.last_time;
+        self.last_time = now;
+        self.frame_count += 1;
+        self.accumulator += dt;
+        if self.accumulator >= 500.0 {
+            self.fps = self.frame_count as f64 / self.accumulator * 1000.0;
+            self.frame_count = 0;
+            self.accumulator = 0.0;
+        }
+        self.fps
+    }
 }
 
 pub fn resize_renderer(width: u32, height: u32) {
@@ -85,8 +134,18 @@ fn format_mat4(label: &str, m: glam::Mat4) -> String {
 fn update_debug_overlay(r: &Renderer) {
     let Some(el) = get_debug_overlay() else { return };
     let view = r.get_camera_info();
+
+    let fps = FPS_STATE.with(|f| {
+        let now = web_sys::window()
+            .and_then(|w| w.performance())
+            .map(|p| p.now())
+            .unwrap_or(0.0);
+        f.borrow_mut().tick(now)
+    });
+
     let text = format!(
-        "{}\n",
+        "FPS: {:.0}\n{}\n",
+        fps,
         format_mat4("View", view),
     );
     el.set_text_content(Some(&text));
@@ -165,6 +224,16 @@ pub fn start_render_loop() {
                     if delta.0 != 0.0 || delta.1 != 0.0 {
                         r.camera_orbit(delta.0, delta.1);
                         *delta = (0.0, 0.0);
+                    }
+                });
+
+                RAYCAST_PENDING.with(|pending| {
+                    if let Some((px, py)) = pending.borrow_mut().take() {
+                        let w = r.canvas_width();
+                        let h = r.canvas_height();
+                        if w > 0.0 && h > 0.0 {
+                            r.raycast(px, py);
+                        }
                     }
                 });
 

@@ -16,7 +16,7 @@ impl Camera {
     pub fn new(screen_width: u32, screen_height: u32) -> Self {
         Self {
             aspect_ratio: screen_width as f32 / screen_height as f32,
-            distance: 5.0,
+            distance: 100.0,
             target: Vec3::ZERO,
             up: Vec3::Y,
             yaw: -90.0,
@@ -39,7 +39,7 @@ impl Camera {
     }
 
     pub fn get_projection_matrix(&self) -> Mat4 {
-        Mat4::perspective_rh(self.fov_y.to_radians(), self.aspect_ratio, 0.1, 100.0)
+        Mat4::perspective_rh(self.fov_y.to_radians(), self.aspect_ratio, 0.1, 1000.0)
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -53,6 +53,6 @@ impl Camera {
     }
 
     pub fn zoom(&mut self, delta: f32) {
-        self.distance = (self.distance - delta).clamp(0.1, 100.0);
+        self.distance = (self.distance - delta).clamp(0.1, 500.0);
     }
 }

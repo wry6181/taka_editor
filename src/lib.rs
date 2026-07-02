@@ -7,6 +7,7 @@ use wasm_bindgen::prelude::*;
 thread_local! {
     static DRAGGING: RefCell<bool> = RefCell::new(false);
     static LAST_MOUSE: RefCell<(i32, i32)> = RefCell::new((0, 0));
+    static CLICK_POS: RefCell<(i32, i32)> = RefCell::new((0, 0));
 }
 
 fn resize_canvas(canvas: &web_sys::HtmlCanvasElement) {
@@ -44,7 +45,10 @@ pub fn run() {
     let canvas_md = canvas.clone();
     let on_mousedown = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
         DRAGGING.with(|d| *d.borrow_mut() = true);
-        LAST_MOUSE.with(|p| *p.borrow_mut() = (event.client_x(), event.client_y()));
+        let cx = event.client_x();
+        let cy = event.client_y();
+        LAST_MOUSE.with(|p| *p.borrow_mut() = (cx, cy));
+        CLICK_POS.with(|p| *p.borrow_mut() = (cx, cy));
     }) as Box<dyn FnMut(_)>);
     canvas_md
         .add_event_listener_with_callback("mousedown", on_mousedown.as_ref().unchecked_ref())
@@ -78,9 +82,21 @@ pub fn run() {
         .expect("failed to add mousemove listener");
     on_mousemove.forget();
 
-    // Mouseup → stop orbit drag
-    let on_mouseup = Closure::wrap(Box::new(move |_: web_sys::MouseEvent| {
-        DRAGGING.with(|d| *d.borrow_mut() = false);
+    // Mouseup → stop orbit drag, detect click (no drift) for raycast
+    let on_mouseup = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+        DRAGGING.with(|d| {
+            *d.borrow_mut() = false;
+        });
+        CLICK_POS.with(|cp| {
+            let (sx, sy) = *cp.borrow();
+            let dx = (event.client_x() - sx).abs();
+            let dy = (event.client_y() - sy).abs();
+            if dx < 4 && dy < 4 {
+                renderer::RAYCAST_PENDING.with(|p| {
+                    *p.borrow_mut() = Some((event.client_x() as f64, event.client_y() as f64));
+                });
+            }
+        });
     }) as Box<dyn FnMut(_)>);
     canvas
         .add_event_listener_with_callback("mouseup", on_mouseup.as_ref().unchecked_ref())
