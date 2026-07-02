@@ -25,6 +25,12 @@ impl Renderer {
     pub fn camera_zoom(&mut self, delta: f64) {
         self.inner.camera_zoom(delta);
     }
+
+
+    pub fn set_light_direction(&mut self, x: f64, y: f64, z: f64) {
+        self.inner.set_light_direction(glam::Vec3::new(x as f32, y as f32, z as f32));
+    }
+
 }
 
 thread_local! {
@@ -55,6 +61,11 @@ pub fn init_renderer(canvas: HtmlCanvasElement) {
                 web_sys::console::log_1(&format!("wgpu ready (backend: {})", backend).into());
                 RENDERER.with(|rc| {
                     *rc.borrow_mut() = Some(Renderer { inner: r });
+                });
+                RENDERER.with(|rc| {
+                    if let Some(r) = rc.borrow_mut().as_mut() {
+                        r.set_light_direction(1.25, 2.5, 10.5);
+                    }
                 });
             }
             Err(e) => {

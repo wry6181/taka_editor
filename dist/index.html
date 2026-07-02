@@ -17,13 +17,13 @@
     }
   </style>
   <title>Canvas Test</title>
-<link rel="modulepreload" href="/taka_editor-409e7247f70d2cf8.js" crossorigin="anonymous" integrity="sha384-5o7D5gIwXpSs7R5L1Bsy61Lf1z6ZRiTP9Af+v6HJpgFuBwj+KYThynxQ6xLhPFYX"><link rel="preload" href="/taka_editor-409e7247f70d2cf8_bg.wasm" crossorigin="anonymous" integrity="sha384-TliF8upL++WMElHzA1R/dXeWRbOmza4sorxyi16Pt4NNPeOQjlD3d1qWXL+T387V" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/taka_editor-ebc19f8143c7dca9.js" crossorigin="anonymous" integrity="sha384-COV9VI0Vx5enKDVVyj8iC0oMqAs6tUeUoXsMOwUtUs/BPhIlOn+dEN8UYD5LaJER"><link rel="preload" href="/taka_editor-ebc19f8143c7dca9_bg.wasm" crossorigin="anonymous" integrity="sha384-aZ/aPvuYsV88+rrSRLUKaKgGahTA9ZMsbbjlHrta+VitkOdXbtf76+ejRXibUnmV" as="fetch" type="application/wasm"></head>
 <body>
   <canvas id="viewport"></canvas>
 
 <script type="module">
-import init, * as bindings from '/taka_editor-409e7247f70d2cf8.js';
-const wasm = await init({ module_or_path: '/taka_editor-409e7247f70d2cf8_bg.wasm' });
+import init, * as bindings from '/taka_editor-ebc19f8143c7dca9.js';
+const wasm = await init({ module_or_path: '/taka_editor-ebc19f8143c7dca9_bg.wasm' });
 
 
 window.wasmBindings = bindings;

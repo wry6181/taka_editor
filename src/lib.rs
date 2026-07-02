@@ -102,7 +102,7 @@ pub fn run() {
         if dy != 0.0 {
             renderer::RENDERER.with(|rc| {
                 if let Some(r) = rc.borrow_mut().as_mut() {
-                    r.camera_zoom(dy * 0.05);
+                    r.camera_zoom(-dy * 0.05);
                 }
             });
         }
