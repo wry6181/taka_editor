@@ -4,27 +4,13 @@ use web_sys::HtmlCanvasElement;
 use wgpu::SurfaceTarget;
 use wgpu::util::DeviceExt;
 
-const VERTICES: &[Vertex] = &[
-    Vertex {
-        position: [-0.5, -0.5, 0.0],
-        color: [1.0, 0.0, 0.0],
-    },
-    Vertex {
-        position: [0.5, -0.5, 0.0],
-        color: [0.0, 1.0, 0.0],
-    },
-    Vertex {
-        position: [0.0, 0.5, 0.0],
-        color: [0.0, 0.0, 1.0],
-    },
-];
-
 const WGSL_SHADER: &str = include_str!("shaders/triangle.wgsl");
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     position: [f32; 3],
+    normal: [f32; 3],
     color: [f32; 3],
 }
 
@@ -56,6 +42,59 @@ impl Globals {
             projection: projection.to_cols_array(),
         }
     }
+}
+
+const GLB_DATA: &[u8] = include_bytes!("../../data/gameboy.glb");
+
+fn load_glb_mesh() -> (Vec<Vertex>, Vec<u32>) {
+    let gltf = gltf::Gltf::from_slice(GLB_DATA).expect("failed to parse GLB");
+    let blob = gltf.blob.as_deref().unwrap_or(&[]);
+
+    let mut all_vertices = Vec::new();
+    let mut all_indices = Vec::new();
+    let mut base_vertex = 0u32;
+
+    for mesh in gltf.meshes() {
+        for primitive in mesh.primitives() {
+            let reader = primitive.reader(|buffer| {
+                if buffer.index() == 0 { Some(blob) } else { None }
+            });
+
+            let positions: Vec<[f32; 3]> = reader
+                .read_positions()
+                .expect("mesh has no positions")
+                .collect();
+            let normals: Vec<[f32; 3]> = match reader.read_normals() {
+                Some(iter) => iter.collect(),
+                None => Vec::new(),
+            };
+
+            let base_color = primitive
+                .material()
+                .pbr_metallic_roughness()
+                .base_color_factor();
+
+            for (i, &pos) in positions.iter().enumerate() {
+                let normal = normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
+                let color = [base_color[0], base_color[1], base_color[2]];
+                all_vertices.push(Vertex { position: pos, normal, color });
+            }
+
+            if let Some(indices) = reader.read_indices() {
+                for idx in indices.into_u32() {
+                    all_indices.push(base_vertex + idx);
+                }
+            } else {
+                for i in 0..positions.len() as u32 {
+                    all_indices.push(base_vertex + i);
+                }
+            }
+
+            base_vertex += positions.len() as u32;
+        }
+    }
+
+    (all_vertices, all_indices)
 }
 
 const ORBIT_SENSITIVITY: f32 = 0.3;
@@ -135,13 +174,16 @@ pub struct WgpuRenderer {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
-    num_vertices: u32,
+    index_buffer: wgpu::Buffer,
+    num_indices: u32,
     backend: wgpu::Backend,
     globals_ubo: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
     model_ubo: wgpu::Buffer,
     model_bind_group: wgpu::BindGroup,
     camera: Camera,
+    depth_texture: wgpu::Texture,
+    depth_view: wgpu::TextureView,
 }
 
 impl WgpuRenderer {
@@ -201,6 +243,9 @@ impl WgpuRenderer {
         };
         surface.configure(&device, &config);
 
+        let depth_texture = Self::create_depth_texture(&device, &config);
+        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(WGSL_SHADER)),
@@ -250,7 +295,7 @@ impl WgpuRenderer {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3],
                 }],
             },
             fragment: Some(wgpu::FragmentState {
@@ -263,18 +308,37 @@ impl WgpuRenderer {
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
         });
 
+        let (mesh_vertices, mesh_indices) = load_glb_mesh();
+
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
-            contents: bytemuck::cast_slice(VERTICES),
+            contents: bytemuck::cast_slice(&mesh_vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
+
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(&mesh_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let num_indices = mesh_indices.len() as u32;
 
         let globals_ubo = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ubo::globals"),
@@ -317,13 +381,16 @@ impl WgpuRenderer {
             config,
             pipeline,
             vertex_buffer,
-            num_vertices: VERTICES.len() as u32,
+            index_buffer,
+            num_indices,
             backend,
             globals_ubo,
             globals_bind_group,
             model_ubo,
             model_bind_group,
             camera,
+            depth_texture,
+            depth_view,
         })
     }
 
@@ -376,7 +443,14 @@ impl WgpuRenderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -386,17 +460,38 @@ impl WgpuRenderer {
             rpass.set_bind_group(0, &self.globals_bind_group, &[]);
             rpass.set_bind_group(1, &self.model_bind_group, &[]);
             rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            rpass.draw(0..self.num_vertices, 0..1);
+            rpass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            rpass.draw_indexed(0..self.num_indices, 0, 0..1);
         }
 
         self.queue.submit(Some(encoder.finish()));
         frame.present();
     }
 
+    fn create_depth_texture(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> wgpu::Texture {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("depth_texture"),
+            size: wgpu::Extent3d {
+                width: config.width.max(1),
+                height: config.height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+    }
+
     pub fn resize(&mut self, width: u32, height: u32) {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
+
+        self.depth_texture = Self::create_depth_texture(&self.device, &self.config);
+        self.depth_view = self.depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         self.camera.resize(width, height);
     }
