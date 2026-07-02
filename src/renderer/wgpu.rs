@@ -5,7 +5,7 @@ use web_sys::HtmlCanvasElement;
 use wgpu::SurfaceTarget;
 use wgpu::util::DeviceExt;
 
-const WGSL_SHADER: &str = include_str!("shaders/editor.wgsl");
+const EDITOR_SHADER: &str = include_str!("shaders/editor.wgsl");
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -59,6 +59,15 @@ impl Light {
     fn new(direction: Vec3) -> Self {
         Self { direction: direction.into(), _padding: 0.0 }
     }
+}
+
+const LINE_SHADER: &str = include_str!("shaders/line.wgsl");
+
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+struct LineVertex {
+    position: [f32; 3],
+    color: [f32; 3],
 }
 
 const GLB_DATA: &[u8] = include_bytes!("../../data/gameboy.glb");
@@ -451,6 +460,10 @@ pub struct WgpuRenderer {
     light_bind_group: wgpu::BindGroup,
     light_direction: Vec3,
     camera: Camera,
+    line_pipeline: wgpu::RenderPipeline,
+    line_vertex_buffer: wgpu::Buffer,
+    line_vertex_capacity: usize,
+    line_vertex_count: u32,
     depth_texture: wgpu::Texture,
     depth_view: wgpu::TextureView,
 }
@@ -506,7 +519,7 @@ impl WgpuRenderer {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(WGSL_SHADER)),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(EDITOR_SHADER)),
         });
 
         let global_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -724,6 +737,65 @@ impl WgpuRenderer {
 
         let camera = Camera::new(width, height);
 
+        let line_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("line_shader"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(LINE_SHADER)),
+        });
+
+        let line_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("line_pipeline_layout"),
+            bind_group_layouts: &[Some(&global_bgl)],
+            immediate_size: 0,
+        });
+
+        let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("line_pipeline"),
+            layout: Some(&line_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &line_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<LineVertex>() as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &line_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false), // lines usually shouldn't occlude/be occluded strictly; tweak if you want depth-tested gizmos
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let line_vertex_capacity = 4096;
+        let line_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("line_vertex_buffer"),
+            size: (line_vertex_capacity * std::mem::size_of::<LineVertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Ok(Self {
             surface,
             device,
@@ -742,6 +814,10 @@ impl WgpuRenderer {
             light_bind_group,
             light_direction: Vec3::new(-0.25, 0.5, -0.5),
             camera,
+            line_pipeline,
+            line_vertex_buffer,
+            line_vertex_capacity,
+            line_vertex_count: 0,
             depth_texture,
             depth_view,
         })
@@ -795,6 +871,7 @@ impl WgpuRenderer {
             rpass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             rpass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
+
             for primitive in &self.primitives {
                 rpass.set_bind_group(2, &primitive.bind_group, &[]);
                 let start = primitive.index_start;
@@ -802,6 +879,12 @@ impl WgpuRenderer {
                 rpass.draw_indexed(start..end, primitive.base_vertex, 0..1);
             }
 
+            if self.line_vertex_count > 0 {
+                rpass.set_pipeline(&self.line_pipeline);
+                rpass.set_bind_group(0, &self.globals_bind_group, &[]);
+                rpass.set_vertex_buffer(0, self.line_vertex_buffer.slice(..));
+                rpass.draw(0..self.line_vertex_count, 0..1);
+            }
 
         }
         self.queue.submit(Some(encoder.finish()));
@@ -849,5 +932,29 @@ impl WgpuRenderer {
     }
     pub fn set_light_direction(&mut self, direction: Vec3) {
         self.light_direction = direction;
+    }
+
+    pub fn set_lines(&mut self, lines: &[(Vec3, Vec3, Vec3)]) {
+        // each tuple: (start, end, color)
+        let mut verts = Vec::with_capacity(lines.len() * 2);
+        for (start, end, color) in lines {
+            verts.push(LineVertex { position: (*start).into(), color: (*color).into() });
+            verts.push(LineVertex { position: (*end).into(), color: (*color).into() });
+        }
+        if verts.len() > self.line_vertex_capacity {
+            self.line_vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("line_vertex_buffer"),
+                size: (verts.len() * std::mem::size_of::<LineVertex>()) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.line_vertex_capacity = verts.len();
+        }
+        self.queue.write_buffer(&self.line_vertex_buffer, 0, bytemuck::cast_slice(&verts));
+        self.line_vertex_count = verts.len() as u32;
+    }
+
+    pub fn get_camera_info(&self) -> Mat4 {
+      self.camera.get_view_matrix()
     }
 }

@@ -15,15 +15,84 @@
         width: 100%;
         height: 100%;
     }
+    #debug-overlay {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        color: #e0e0e0;
+        font-family: monospace;
+        font-size: 12px;
+        white-space: pre;
+        background: rgba(0, 0, 0, 0.4);
+        padding: 8px 10px;
+        border-radius: 4px;
+        pointer-events: none; /* clicks pass through to the canvas */
+        line-height: 1.4;
+    }
+
+    /* --- 3D Orientation Gizmo Styles --- */
+    #gizmo-container {
+        position: absolute;
+        bottom: 24px;
+        right: 24px;
+        width: 80px;
+        height: 80px;
+        /* Perspective gives it a subtle 3D depth effect */
+        perspective: 400px;
+        pointer-events: none;
+    }
+    #gizmo-space {
+        width: 100%;
+        height: 100%;
+        position: relative;
+        /* Tells the browser to render children in true 3D space, not flattened */
+        transform-style: preserve-3d;
+        transition: transform 0.05s linear; /* Smooths out any micro-stutter */
+    }
+    .axis {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 35px;
+        height: 3px;
+        border-radius: 2px;
+        /* Ensure the lines rotate around the exact center of our widget container */
+        transform-origin: left center;
+    }
+    /* X-Axis points right by default (Red) */
+    .x-axis {
+        background: #ff4444;
+        transform: translate(0, -50%) rotateY(0deg);
+    }
+    /* Y-Axis points straight up by default (Green) */
+    .y-axis {
+        background: #44ff44;
+        transform: translate(0, -50%) rotateZ(-90deg);
+    }
+    /* Z-Axis points forward/backward out of the screen by default (Blue) */
+    .z-axis {
+        background: #4444ff;
+        transform: translate(0, -50%) rotateY(90deg);
+    }
   </style>
   <title>Canvas Test</title>
-<link rel="modulepreload" href="/taka_editor-ebc19f8143c7dca9.js" crossorigin="anonymous" integrity="sha384-COV9VI0Vx5enKDVVyj8iC0oMqAs6tUeUoXsMOwUtUs/BPhIlOn+dEN8UYD5LaJER"><link rel="preload" href="/taka_editor-ebc19f8143c7dca9_bg.wasm" crossorigin="anonymous" integrity="sha384-aZ/aPvuYsV88+rrSRLUKaKgGahTA9ZMsbbjlHrta+VitkOdXbtf76+ejRXibUnmV" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/taka_editor-542b9ca7751680f4.js" crossorigin="anonymous" integrity="sha384-FndBzU61CdQMoB8c6JcfXo2gJzJqHFWtvCfH/ol/nGS7qEWplWMNN59rwJN1YYgu"><link rel="preload" href="/taka_editor-542b9ca7751680f4_bg.wasm" crossorigin="anonymous" integrity="sha384-v5ULurcb1YrxSSuMFFStq9f0n5FwAMUCH/MOJ3e8cFsIdwYli4MwvURyqz2FP5mA" as="fetch" type="application/wasm"></head>
 <body>
   <canvas id="viewport"></canvas>
+  <div id="debug-overlay"></div>
+
+  <!-- The visual 3D coordinate gizmo -->
+  <div id="gizmo-container">
+    <div id="gizmo-space">
+      <div class="axis x-axis"></div>
+      <div class="axis y-axis"></div>
+      <div class="axis z-axis"></div>
+    </div>
+  </div>
 
 <script type="module">
-import init, * as bindings from '/taka_editor-ebc19f8143c7dca9.js';
-const wasm = await init({ module_or_path: '/taka_editor-ebc19f8143c7dca9_bg.wasm' });
+import init, * as bindings from '/taka_editor-542b9ca7751680f4.js';
+const wasm = await init({ module_or_path: '/taka_editor-542b9ca7751680f4_bg.wasm' });
 
 
 window.wasmBindings = bindings;
