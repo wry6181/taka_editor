@@ -1,3 +1,6 @@
+mod camera;
+mod pass;
+mod passes;
 mod wgpu;
 
 use std::cell::RefCell;
