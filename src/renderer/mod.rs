@@ -2,6 +2,7 @@ mod camera;
 mod pass;
 mod passes;
 mod ray;
+mod remesh;
 mod wgpu;
 
 use std::cell::RefCell;
@@ -48,7 +49,7 @@ impl Renderer {
     }
 
     pub fn raycast(&mut self, px: f64, py: f64) {
-        self.inner.raycast(px, py);
+        self.inner.raycast_gpu(px, py);
     }
 
     pub fn set_lines(&mut self, lines: &[(glam::Vec3, glam::Vec3, glam::Vec3)]) {
@@ -59,6 +60,46 @@ impl Renderer {
         self.inner.get_camera_info()
     }
 
+    pub fn remesh_toggle(&mut self) {
+        self.inner.remesh_toggle();
+    }
+
+    pub fn remesh_is_active(&self) -> bool {
+        self.inner.remesh_is_active()
+    }
+
+    pub fn remesh_is_dragging(&self) -> bool {
+        self.inner.remesh_is_dragging()
+    }
+
+    pub fn remesh_handle_mousedown(&mut self, px: f64, py: f64) -> bool {
+        self.inner.remesh_handle_mousedown(px, py)
+    }
+
+    pub fn remesh_handle_mousemove(&mut self, px: f64, py: f64) {
+        self.inner.remesh_handle_mousemove(px, py);
+    }
+
+    pub fn remesh_handle_mouseup(&mut self) {
+        self.inner.remesh_handle_mouseup();
+    }
+
+    pub fn remesh_handle_click(&mut self, px: f64, py: f64) -> bool {
+        self.inner.remesh_handle_click(px, py)
+    }
+
+    pub fn remesh_toggle_mesh(&mut self) {
+        self.inner.remesh_toggle_mesh();
+    }
+
+    pub fn remesh_show_mesh(&self) -> bool {
+        self.inner.remesh_show_mesh()
+    }
+}
+
+pub struct GpuRaycastOutcome {
+    pub hit: bool,
+    pub t: f32,
 }
 
 thread_local! {
@@ -68,6 +109,7 @@ thread_local! {
     static GIZMO_ELEMENT: std::cell::RefCell<Option<web_sys::Element>> = const { std::cell::RefCell::new(None) };
     static FPS_STATE: RefCell<FpsCounter> = RefCell::new(FpsCounter::new());
     pub static RAYCAST_PENDING: RefCell<Option<(f64, f64)>> = const { RefCell::new(None) };
+    pub static GPU_RAYCAST_RESULT: RefCell<Option<GpuRaycastOutcome>> = const { RefCell::new(None) };
 }
 
 struct FpsCounter {
@@ -143,10 +185,14 @@ fn update_debug_overlay(r: &Renderer) {
         f.borrow_mut().tick(now)
     });
 
+    let remesh_mode = r.remesh_is_active();
+    let show_mesh = r.remesh_show_mesh();
     let text = format!(
-        "FPS: {:.0}\n{}\n",
+        "FPS: {:.0}\n{}\nRemesh: {}  Mesh: {}\n",
         fps,
         format_mat4("View", view),
+        if remesh_mode { "ON" } else { "OFF" },
+        if show_mesh { "SHOW" } else { "HIDE" },
     );
     el.set_text_content(Some(&text));
     // 2. Drive the 3D CSS Gizmo
@@ -229,10 +275,12 @@ pub fn start_render_loop() {
 
                 RAYCAST_PENDING.with(|pending| {
                     if let Some((px, py)) = pending.borrow_mut().take() {
-                        let w = r.canvas_width();
-                        let h = r.canvas_height();
-                        if w > 0.0 && h > 0.0 {
-                            r.raycast(px, py);
+                        if !r.remesh_is_active() {
+                            let w = r.canvas_width();
+                            let h = r.canvas_height();
+                            if w > 0.0 && h > 0.0 {
+                                r.raycast(px, py);
+                            }
                         }
                     }
                 });

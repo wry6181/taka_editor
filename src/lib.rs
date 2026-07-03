@@ -41,12 +41,17 @@ pub fn run() {
         .expect("failed to add resize listener");
     cb.forget();
 
-    // Mousedown → start orbit drag
+    // Mousedown → start orbit drag, or remesh gizmo drag
     let canvas_md = canvas.clone();
     let on_mousedown = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
-        DRAGGING.with(|d| *d.borrow_mut() = true);
         let cx = event.client_x();
         let cy = event.client_y();
+        let gizmo_drag = renderer::RENDERER.with(|rc| {
+            rc.borrow_mut().as_mut().map_or(false, |r| r.remesh_handle_mousedown(cx as f64, cy as f64))
+        });
+        if !gizmo_drag {
+            DRAGGING.with(|d| *d.borrow_mut() = true);
+        }
         LAST_MOUSE.with(|p| *p.borrow_mut() = (cx, cy));
         CLICK_POS.with(|p| *p.borrow_mut() = (cx, cy));
     }) as Box<dyn FnMut(_)>);
@@ -55,48 +60,77 @@ pub fn run() {
         .expect("failed to add mousedown listener");
     on_mousedown.forget();
 
-    // Mousemove → orbit if dragging
+    // Mousemove → orbit if dragging, or remesh gizmo drag
     let on_mousemove = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
-        DRAGGING.with(|d| {
-            if *d.borrow() {
-                let cx = event.client_x();
-                let cy = event.client_y();
-                LAST_MOUSE.with(|p| {
-                    let (lx, ly) = *p.borrow();
-                    let dx = (cy - ly) as f64;
-                    let dy = (cx - lx) as f64;
-                    if dx != 0.0 || dy != 0.0 {
-                        renderer::ORBIT_DELTA.with(|m| {
-                            let mut delta = m.borrow_mut();
-                            delta.0 += dy;
-                            delta.1 += dx;
-                        });
-                        *p.borrow_mut() = (cx, cy);
-                    }
-                });
-            }
+        let cx = event.client_x() as f64;
+        let cy = event.client_y() as f64;
+        let is_dragging = renderer::RENDERER.with(|rc| {
+            rc.borrow_mut().as_mut().map_or(false, |r| {
+                if r.remesh_is_dragging() {
+                    r.remesh_handle_mousemove(cx, cy);
+                    true
+                } else {
+                    false
+                }
+            })
         });
+        if !is_dragging {
+            DRAGGING.with(|d| {
+                if *d.borrow() {
+                    LAST_MOUSE.with(|p| {
+                        let (lx, ly) = *p.borrow();
+                        let dx = (cy as i32 - ly) as f64;
+                        let dy = (cx as i32 - lx) as f64;
+                        if dx != 0.0 || dy != 0.0 {
+                            renderer::ORBIT_DELTA.with(|m| {
+                                let mut delta = m.borrow_mut();
+                                delta.0 += dy;
+                                delta.1 += dx;
+                            });
+                            *p.borrow_mut() = (cx as i32, cy as i32);
+                        }
+                    });
+                }
+            });
+        }
     }) as Box<dyn FnMut(_)>);
     canvas
         .add_event_listener_with_callback("mousemove", on_mousemove.as_ref().unchecked_ref())
         .expect("failed to add mousemove listener");
     on_mousemove.forget();
 
-    // Mouseup → stop orbit drag, detect click (no drift) for raycast
+    // Mouseup → stop orbit drag, end remesh drag, detect click
     let on_mouseup = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
-        DRAGGING.with(|d| {
-            *d.borrow_mut() = false;
+        let was_remesh_drag = renderer::RENDERER.with(|rc| {
+            rc.borrow_mut().as_mut().map_or(false, |r| {
+                if r.remesh_is_dragging() {
+                    r.remesh_handle_mouseup();
+                    true
+                } else {
+                    false
+                }
+            })
         });
-        CLICK_POS.with(|cp| {
-            let (sx, sy) = *cp.borrow();
-            let dx = (event.client_x() - sx).abs();
-            let dy = (event.client_y() - sy).abs();
-            if dx < 4 && dy < 4 {
-                renderer::RAYCAST_PENDING.with(|p| {
-                    *p.borrow_mut() = Some((event.client_x() as f64, event.client_y() as f64));
-                });
-            }
-        });
+        DRAGGING.with(|d| *d.borrow_mut() = false);
+        if !was_remesh_drag {
+            CLICK_POS.with(|cp| {
+                let (sx, sy) = *cp.borrow();
+                let dx = (event.client_x() - sx).abs();
+                let dy = (event.client_y() - sy).abs();
+                if dx < 4 && dy < 4 {
+                    let px = event.client_x() as f64;
+                    let py = event.client_y() as f64;
+                    let consumed = renderer::RENDERER.with(|rc| {
+                        rc.borrow_mut().as_mut().map_or(false, |r| r.remesh_handle_click(px, py))
+                    });
+                    if !consumed {
+                        renderer::RAYCAST_PENDING.with(|p| {
+                            *p.borrow_mut() = Some((px, py));
+                        });
+                    }
+                }
+            });
+        }
     }) as Box<dyn FnMut(_)>);
     canvas
         .add_event_listener_with_callback("mouseup", on_mouseup.as_ref().unchecked_ref())
@@ -128,6 +162,28 @@ pub fn run() {
         .add_event_listener_with_callback("wheel", on_wheel.as_ref().unchecked_ref())
         .expect("failed to add wheel listener");
     on_wheel.forget();
+
+    // Keydown → 'R' toggles remesh mode, 'M' toggles mesh visibility
+    let on_keydown = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+        let key = event.key();
+        if key == "r" || key == "R" {
+            renderer::RENDERER.with(|rc| {
+                if let Some(r) = rc.borrow_mut().as_mut() {
+                    r.remesh_toggle();
+                }
+            });
+        } else if key == "m" || key == "M" {
+            renderer::RENDERER.with(|rc| {
+                if let Some(r) = rc.borrow_mut().as_mut() {
+                    r.remesh_toggle_mesh();
+                }
+            });
+        }
+    }) as Box<dyn FnMut(_)>);
+    window
+        .add_event_listener_with_callback("keydown", on_keydown.as_ref().unchecked_ref())
+        .expect("failed to add keydown listener");
+    on_keydown.forget();
 
     renderer::start_render_loop();
 }
