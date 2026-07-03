@@ -380,11 +380,11 @@ impl WgpuRenderer {
             self.remesh_fill_count = 0;
             return;
         };
-        if !self.remesh_active || remesh.triangles.is_empty() {
+        if !self.remesh_active || remesh.faces_empty() {
             self.remesh_fill_count = 0;
             return;
         }
-        let vert_count = (remesh.triangles.len() * 3) as u32;
+        let vert_count = (remesh.face_count() * 3) as u32;
         let needed = vert_count.max(1) as u64 * 12;
         if needed > self.remesh_fill_capacity as u64 * 12 {
             self.remesh_fill_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -395,12 +395,7 @@ impl WgpuRenderer {
             });
             self.remesh_fill_capacity = vert_count;
         }
-        let mut verts: Vec<[f32; 3]> = Vec::with_capacity(vert_count as usize);
-        for &(a, b, c) in &remesh.triangles {
-            verts.push(remesh.points[a as usize].to_array());
-            verts.push(remesh.points[b as usize].to_array());
-            verts.push(remesh.points[c as usize].to_array());
-        }
+        let mut verts = remesh.fill_vertices();
         self.queue.write_buffer(&self.remesh_fill_buffer, 0, bytemuck::cast_slice(&verts));
         self.remesh_fill_count = vert_count;
     }
@@ -423,16 +418,9 @@ impl WgpuRenderer {
 
         if let Some(ref remesh) = self.remesh {
             if self.remesh_active {
-                for &(a, b, c) in &remesh.triangles {
-                    let pa = remesh.points[a as usize];
-                    let pb = remesh.points[b as usize];
-                    let pc = remesh.points[c as usize];
-                    all.push((pa, pb, Vec3::new(0.2, 1.0, 0.2)));
-                    all.push((pb, pc, Vec3::new(0.2, 1.0, 0.2)));
-                    all.push((pc, pa, Vec3::new(0.2, 1.0, 0.2)));
-                }
+                all.extend(remesh.wireframe_lines());
                 if let Some(idx) = remesh.selected {
-                    let pos = remesh.points[idx];
+                    let pos = remesh.mesh.vertices[idx].pos;
                     let axis_len = 1.5;
                     all.push((pos, pos + Vec3::X * axis_len, Vec3::new(1.0, 0.0, 0.0)));
                     all.push((pos, pos + Vec3::Y * axis_len, Vec3::new(0.0, 1.0, 0.0)));
@@ -441,9 +429,9 @@ impl WgpuRenderer {
                     all.extend(Self::wireframe_sphere(pos + Vec3::Y * axis_len, 0.08, Vec3::new(0.0, 1.0, 0.0), 8));
                     all.extend(Self::wireframe_sphere(pos + Vec3::Z * axis_len, 0.08, Vec3::new(0.0, 0.0, 1.0), 8));
                 }
-                for (i, &pos) in remesh.points.iter().enumerate() {
+                for (i, v) in remesh.mesh.vertices.iter().enumerate() {
                     let c = if remesh.selected == Some(i) { Vec3::new(1.0, 1.0, 0.0) } else { Vec3::new(1.0, 0.5, 0.0) };
-                    all.extend(Self::wireframe_sphere(pos, 0.1, c, 12));
+                    all.extend(Self::wireframe_sphere(v.pos, 0.1, c, 12));
                 }
             }
         }
@@ -594,7 +582,7 @@ impl WgpuRenderer {
         }
         self.remesh_drag_axis = axis;
         self.remesh_drag_start_mouse = Some((px, py));
-        self.remesh_drag_start_pos = Some(remesh.points[sel]);
+        self.remesh_drag_start_pos = Some(remesh.mesh.vertices[sel].pos);
         true
     }
 
@@ -634,7 +622,8 @@ impl WgpuRenderer {
             if len_sq < 1.0 { return; }
             let world_offset = ((dx * svx + dy * svy) / len_sq) as f32;
             if let Some(ref mut remesh) = self.remesh {
-                remesh.points[idx] = start_pos + axis_dir * world_offset;
+                let idx = remesh.selected.unwrap();
+                remesh.mesh.vertices[idx].pos = start_pos + axis_dir * world_offset;
                 self.flush_lines();
             }
         } else {
@@ -647,7 +636,8 @@ impl WgpuRenderer {
             let a = (dx * uy - dy * ux) / det;
             let b = (ry * dx - rx * dy) / det;
             if let Some(ref mut remesh) = self.remesh {
-                remesh.points[idx] = start_pos + right * a as f32 + up * b as f32;
+                let idx = remesh.selected.unwrap();
+                remesh.mesh.vertices[idx].pos = start_pos + right * a as f32 + up * b as f32;
                 self.flush_lines();
             }
         }
@@ -670,7 +660,7 @@ impl WgpuRenderer {
 
         // 1. Try selecting a control point
         if let Some(ref remesh) = self.remesh {
-            if !remesh.points.is_empty() {
+            if !remesh.mesh.vertices.is_empty() {
                 let (view, proj) = self.get_view_proj();
                 let hit_idx = remesh.hit_point_screen(ndc_x, ndc_y, view, proj, 0.03);
                 if let Some(idx) = hit_idx {

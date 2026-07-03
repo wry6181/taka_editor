@@ -1,4 +1,5 @@
 mod camera;
+mod half_edge;
 mod pass;
 mod passes;
 mod ray;

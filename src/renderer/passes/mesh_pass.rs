@@ -21,6 +21,29 @@ struct Vertex {
     color: [f32; 3],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct GpuRayUniform {
+    origin: [f32; 4],
+    direction: [f32; 4],
+}
+
+impl From<&Ray> for GpuRayUniform {
+    fn from(ray: &Ray) -> Self {
+        Self {
+            origin: [ray.origin.x, ray.origin.y, ray.origin.z, 0.0],
+            direction: [ray.direction.x, ray.direction.y, ray.direction.z, 0.0],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct GpuHitResult {
+    pub hit: u32,
+    pub t_bits: u32,
+}
+
 #[derive(Debug, Default, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 struct Model {
@@ -382,6 +405,13 @@ pub struct MeshPass {
     light_direction: Vec3,
     mesh_positions: Vec<[f32; 3]>,
     mesh_indices: Vec<u32>,
+    position_storage: wgpu::Buffer,
+    index_storage: wgpu::Buffer,
+    ray_ubo: wgpu::Buffer,
+    result_ssbo: wgpu::Buffer,
+    staging_buffer: wgpu::Buffer,
+    compute_pipeline: wgpu::ComputePipeline,
+    raycast_bind_group: wgpu::BindGroup,
 }
 
 impl MeshPass {
@@ -588,6 +618,121 @@ impl MeshPass {
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: light_ubo.as_entire_binding() }],
         });
 
+        let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("raycast_compute"),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(
+                include_str!("../shaders/raycast.wgsl"),
+            )),
+        });
+
+        let padded_positions: Vec<[f32; 4]> =
+            mesh_positions.iter().map(|p| [p[0], p[1], p[2], 0.0]).collect();
+        let position_storage = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("buffer::positions_storage"),
+            contents: bytemuck::cast_slice(&padded_positions),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let index_storage = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("buffer::indices_storage"),
+            contents: bytemuck::cast_slice(&mesh_indices),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let ray_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ubo::ray"),
+            size: std::mem::size_of::<GpuRayUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let result_size = std::mem::size_of::<GpuHitResult>() as u64;
+        let result_ssbo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("ssbo::raycast_result"),
+            size: result_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("buffer::raycast_staging"),
+            size: result_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let raycast_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("bind_group_layout::raycast"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<GpuRayUniform>() as u64),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("pipeline_layout::raycast"),
+            bind_group_layouts: &[Some(&raycast_bgl)],
+            immediate_size: 0,
+        });
+
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("pipeline::raycast"),
+            layout: Some(&compute_pipeline_layout),
+            module: &compute_shader,
+            entry_point: Some("cs_main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        let raycast_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bind_group::raycast"),
+            layout: &raycast_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: position_storage.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: index_storage.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: ray_ubo.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: result_ssbo.as_entire_binding() },
+            ],
+        });
+
         Self {
             pipeline,
             vertex_buffer,
@@ -601,6 +746,13 @@ impl MeshPass {
             light_direction: Vec3::new(-0.25, 0.5, -0.5),
             mesh_positions,
             mesh_indices,
+            position_storage,
+            index_storage,
+            ray_ubo,
+            result_ssbo,
+            staging_buffer,
+            compute_pipeline,
+            raycast_bind_group,
         }
     }
 
@@ -610,6 +762,36 @@ impl MeshPass {
 
     pub fn ray_intersect(&self, ray: &Ray) -> Option<Vec3> {
         ray.intersect_mesh(&self.mesh_positions, &self.mesh_indices)
+    }
+
+    pub fn dispatch_raycast(&self, device: &wgpu::Device, queue: &wgpu::Queue, ray: &Ray) -> wgpu::Buffer {
+        let ray_uniform = GpuRayUniform::from(ray);
+        queue.write_buffer(&self.ray_ubo, 0, bytemuck::cast_slice(&[ray_uniform]));
+
+        let reset = GpuHitResult { hit: 0, t_bits: f32::INFINITY.to_bits() };
+        queue.write_buffer(&self.result_ssbo, 0, bytemuck::cast_slice(&[reset]));
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("encoder::raycast"),
+        });
+
+        {
+            let num_tris = self.mesh_indices.len() / 3;
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("compute::raycast"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.compute_pipeline);
+            cpass.set_bind_group(0, &self.raycast_bind_group, &[]);
+            cpass.dispatch_workgroups((num_tris as u32 + 63) / 64, 1, 1);
+        }
+
+        let result_size = std::mem::size_of::<GpuHitResult>() as u64;
+        encoder.copy_buffer_to_buffer(&self.result_ssbo, 0, &self.staging_buffer, 0, result_size);
+
+        queue.submit(Some(encoder.finish()));
+
+        self.staging_buffer.clone()
     }
 }
 
