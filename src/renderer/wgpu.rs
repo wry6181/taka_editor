@@ -72,6 +72,13 @@ pub struct WgpuRenderer {
     remesh_fill_buffer: wgpu::Buffer,
     remesh_fill_capacity: u32,
     remesh_fill_count: u32,
+    mesh_selected: bool,
+    mesh_model_matrix: Mat4,
+    mesh_drag_axis: Option<usize>,
+    mesh_drag_start_mouse: Option<(f64, f64)>,
+    mesh_drag_start_pos: Option<Vec3>,
+    mesh_drag_start_matrix: Option<Mat4>,
+    mesh_highlight_color: Vec3,
 }
 
 impl WgpuRenderer {
@@ -245,6 +252,13 @@ impl WgpuRenderer {
             remesh_fill_buffer,
             remesh_fill_capacity: 4096,
             remesh_fill_count: 0,
+            mesh_selected: false,
+            mesh_model_matrix: Mat4::IDENTITY,
+            mesh_drag_axis: None,
+            mesh_drag_start_mouse: None,
+            mesh_drag_start_pos: None,
+            mesh_drag_start_matrix: None,
+            mesh_highlight_color: Vec3::new(1.0, 0.5, 0.0),
         })
     }
 
@@ -416,6 +430,36 @@ impl WgpuRenderer {
             }
         }
 
+        // Mesh highlight + gizmo when selected
+        if self.mesh_selected && self.show_mesh {
+            let center = self.mesh_model_matrix.transform_point3(self.mesh_pass.mesh_center());
+            let (bmin, bmax) = self.mesh_pass.bounding_box();
+            let size = (bmax - bmin).length();
+            let axis_len = (size * 0.8).max(2.0);
+
+            // Highlight: wireframe overlay in orange
+            let highlight_color = Vec3::new(1.0, 0.5, 0.1);
+            let (_, indices) = self.mesh_pass.raw_triangles();
+            for tri in indices.chunks_exact(3) {
+                let p0 = self.mesh_model_matrix.transform_point3(self.mesh_pass.vertex_position(tri[0]));
+                let p1 = self.mesh_model_matrix.transform_point3(self.mesh_pass.vertex_position(tri[1]));
+                let p2 = self.mesh_model_matrix.transform_point3(self.mesh_pass.vertex_position(tri[2]));
+                all.push((p0, p1, highlight_color));
+                all.push((p1, p2, highlight_color));
+                all.push((p2, p0, highlight_color));
+            }
+
+            // Gizmo axes (from mesh center, scaled to mesh size)
+            let gc = center;
+            all.push((gc, gc + Vec3::X * axis_len, Vec3::new(1.0, 0.0, 0.0)));
+            all.push((gc, gc + Vec3::Y * axis_len, Vec3::new(0.0, 1.0, 0.0)));
+            all.push((gc, gc + Vec3::Z * axis_len, Vec3::new(0.0, 0.0, 1.0)));
+            let r = (axis_len * 0.04).max(0.06);
+            all.extend(Self::wireframe_sphere(gc + Vec3::X * axis_len, r, Vec3::new(1.0, 0.0, 0.0), 8));
+            all.extend(Self::wireframe_sphere(gc + Vec3::Y * axis_len, r, Vec3::new(0.0, 1.0, 0.0), 8));
+            all.extend(Self::wireframe_sphere(gc + Vec3::Z * axis_len, r, Vec3::new(0.0, 0.0, 1.0), 8));
+        }
+
         if let Some(ref remesh) = self.remesh {
             if self.remesh_active {
                 all.extend(remesh.wireframe_lines());
@@ -560,7 +604,115 @@ impl WgpuRenderer {
     }
 
     pub fn remesh_is_dragging(&self) -> bool {
-        self.remesh_drag_axis.is_some()
+        self.remesh_drag_axis.is_some() || self.mesh_drag_axis.is_some()
+    }
+
+    pub fn handle_mousedown(&mut self, px: f64, py: f64) -> bool {
+        if self.remesh_active {
+            return self.remesh_handle_mousedown(px, py);
+        }
+
+        // Mesh gizmo hit test (when remesh is off)
+        if self.mesh_selected {
+            let w = self.config.width as f64;
+            let h = self.config.height as f64;
+            let ndc_x = (2.0 * px / w - 1.0) as f32;
+            let ndc_y = (1.0 - 2.0 * py / h) as f32;
+            let (view, proj) = self.get_view_proj();
+            if let Some(axis) = self.mesh_gizmo_hit_screen(ndc_x, ndc_y, view, proj, 0.04) {
+                self.mesh_drag_axis = Some(axis);
+                self.mesh_drag_start_mouse = Some((px, py));
+                let center = self.mesh_model_matrix.transform_point3(self.mesh_pass.mesh_center());
+                self.mesh_drag_start_pos = Some(center);
+                self.mesh_drag_start_matrix = Some(self.mesh_model_matrix);
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn handle_mousemove(&mut self, px: f64, py: f64) {
+        if self.remesh_drag_axis.is_some() {
+            self.remesh_handle_mousemove(px, py);
+            return;
+        }
+        if let Some(axis) = self.mesh_drag_axis {
+            self.mesh_drag_mousemove(axis, px, py);
+        }
+    }
+
+    pub fn handle_mouseup(&mut self) -> bool {
+        let had_drag = self.remesh_drag_axis.is_some() || self.mesh_drag_axis.is_some();
+        self.remesh_drag_axis = None;
+        self.remesh_drag_start_mouse = None;
+        self.remesh_drag_start_pos = None;
+        self.mesh_drag_axis = None;
+        self.mesh_drag_start_mouse = None;
+        self.mesh_drag_start_pos = None;
+        self.mesh_drag_start_matrix = None;
+        had_drag
+    }
+
+    fn mesh_gizmo_hit_screen(&self, ndc_x: f32, ndc_y: f32, view: Mat4, proj: Mat4, threshold: f32) -> Option<usize> {
+        let center = self.mesh_model_matrix.transform_point3(self.mesh_pass.mesh_center());
+        let (bmin, bmax) = self.mesh_pass.bounding_box();
+        let size = (bmax - bmin).length();
+        let axis_len = (size * 0.8).max(2.0);
+
+        for axis in 0..3 {
+            let dir = match axis {
+                0 => Vec3::X,
+                1 => Vec3::Y,
+                _ => Vec3::Z,
+            };
+            let start_ndc = super::remesh::project_to_ndc(center, view, proj);
+            let end_ndc = super::remesh::project_to_ndc(center + dir * axis_len, view, proj);
+            let dist = super::remesh::ndc_segment_distance(ndc_x, ndc_y, start_ndc, end_ndc);
+            if dist < threshold {
+                return Some(axis);
+            }
+        }
+        None
+    }
+
+    fn mesh_drag_mousemove(&mut self, axis: usize, px: f64, py: f64) {
+        let Some((sx, sy)) = self.mesh_drag_start_mouse else { return };
+        let Some(start_pos) = self.mesh_drag_start_pos else { return };
+        let Some(start_matrix) = self.mesh_drag_start_matrix else { return };
+
+        let w = self.config.width;
+        let h = self.config.height;
+        let view = self.camera.get_view_matrix();
+        let proj = self.camera.get_projection_matrix();
+        let vp = proj * view;
+
+        let screen_vec = |dir: Vec3| -> (f64, f64) {
+            let base = vp.project_point3(start_pos);
+            let tip = vp.project_point3(start_pos + dir);
+            let bx = (base.x as f64 + 1.0) * 0.5 * w as f64;
+            let by = (1.0 - base.y as f64) * 0.5 * h as f64;
+            let tx = (tip.x as f64 + 1.0) * 0.5 * w as f64;
+            let ty = (1.0 - tip.y as f64) * 0.5 * h as f64;
+            (tx - bx, ty - by)
+        };
+
+        let dx = px - sx;
+        let dy = py - sy;
+
+        let axis_dir = match axis {
+            0 => Vec3::X,
+            1 => Vec3::Y,
+            _ => Vec3::Z,
+        };
+        let (svx, svy) = screen_vec(axis_dir);
+        let len_sq = svx * svx + svy * svy;
+        if len_sq < 1.0 { return; }
+        let world_offset = ((dx * svx + dy * svy) / len_sq) as f32;
+        let translation = axis_dir * world_offset;
+        let start_trans = start_matrix.w_axis.truncate();
+        self.mesh_model_matrix = Mat4::from_translation(start_trans + translation);
+        self.mesh_pass.set_model_matrix(self.mesh_model_matrix);
+        self.flush_lines();
     }
 
     pub fn remesh_handle_mousedown(&mut self, px: f64, py: f64) -> bool {
@@ -590,7 +742,7 @@ impl WgpuRenderer {
         let Some(axis) = self.remesh_drag_axis else { return };
         let Some((sx, sy)) = self.remesh_drag_start_mouse else { return };
         let Some(start_pos) = self.remesh_drag_start_pos else { return };
-        let Some(idx) = self.remesh.as_ref().and_then(|r| r.selected) else { return };
+        let Some(_idx) = self.remesh.as_ref().and_then(|r| r.selected) else { return };
 
         let w = self.config.width;
         let h = self.config.height;
@@ -686,5 +838,35 @@ impl WgpuRenderer {
         }
         self.flush_lines();
         true
+    }
+
+    pub fn toggle_select_mesh(&mut self) {
+        self.mesh_selected = !self.mesh_selected;
+        self.flush_lines();
+    }
+
+    pub fn mesh_is_selected(&self) -> bool {
+        self.mesh_selected
+    }
+
+    pub fn select_mesh_at_screen(&mut self, px: f64, py: f64) -> bool {
+        let w = self.config.width as f64;
+        let h = self.config.height as f64;
+        let ndc_x = (2.0 * px / w - 1.0) as f32;
+        let ndc_y = (1.0 - 2.0 * py / h) as f32;
+        let inv_vp = self.get_inv_vp();
+        let ray = Ray::from_screen(ndc_x, ndc_y, inv_vp);
+        if self.mesh_pass.ray_intersect_with_model(&ray, &self.mesh_model_matrix).is_some() {
+            self.mesh_selected = true;
+            self.flush_lines();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn deselect_mesh(&mut self) {
+        self.mesh_selected = false;
+        self.flush_lines();
     }
 }

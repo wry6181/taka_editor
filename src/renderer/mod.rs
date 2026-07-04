@@ -73,20 +73,36 @@ impl Renderer {
         self.inner.remesh_is_dragging()
     }
 
-    pub fn remesh_handle_mousedown(&mut self, px: f64, py: f64) -> bool {
-        self.inner.remesh_handle_mousedown(px, py)
+    pub fn handle_mousedown(&mut self, px: f64, py: f64) -> bool {
+        self.inner.handle_mousedown(px, py)
     }
 
-    pub fn remesh_handle_mousemove(&mut self, px: f64, py: f64) {
-        self.inner.remesh_handle_mousemove(px, py);
+    pub fn handle_mousemove(&mut self, px: f64, py: f64) {
+        self.inner.handle_mousemove(px, py);
     }
 
-    pub fn remesh_handle_mouseup(&mut self) {
-        self.inner.remesh_handle_mouseup();
+    pub fn handle_mouseup(&mut self) {
+        self.inner.handle_mouseup();
     }
 
     pub fn remesh_handle_click(&mut self, px: f64, py: f64) -> bool {
         self.inner.remesh_handle_click(px, py)
+    }
+
+    pub fn toggle_select_mesh(&mut self) {
+        self.inner.toggle_select_mesh();
+    }
+
+    pub fn mesh_is_selected(&self) -> bool {
+        self.inner.mesh_is_selected()
+    }
+
+    pub fn select_mesh_at_screen(&mut self, px: f64, py: f64) -> bool {
+        self.inner.select_mesh_at_screen(px, py)
+    }
+
+    pub fn deselect_mesh(&mut self) {
+        self.inner.deselect_mesh();
     }
 
     pub fn remesh_toggle_mesh(&mut self) {

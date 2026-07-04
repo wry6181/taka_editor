@@ -412,6 +412,7 @@ pub struct MeshPass {
     staging_buffer: wgpu::Buffer,
     compute_pipeline: wgpu::ComputePipeline,
     raycast_bind_group: wgpu::BindGroup,
+    model_matrix: Mat4,
 }
 
 impl MeshPass {
@@ -753,6 +754,7 @@ impl MeshPass {
             staging_buffer,
             compute_pipeline,
             raycast_bind_group,
+            model_matrix: Mat4::IDENTITY,
         }
     }
 
@@ -762,6 +764,55 @@ impl MeshPass {
 
     pub fn ray_intersect(&self, ray: &Ray) -> Option<Vec3> {
         ray.intersect_mesh(&self.mesh_positions, &self.mesh_indices)
+    }
+
+    pub fn ray_intersect_with_model(&self, ray: &Ray, model: &Mat4) -> Option<Vec3> {
+        let inv = model.inverse();
+        let orig = inv.transform_point3(ray.origin);
+        let dir = inv.transform_vector3(ray.direction);
+        let local_ray = Ray { origin: orig, direction: dir };
+        local_ray.intersect_mesh(&self.mesh_positions, &self.mesh_indices).map(|p| model.transform_point3(p))
+    }
+
+    pub fn set_model_matrix(&mut self, mat: Mat4) {
+        self.model_matrix = mat;
+    }
+
+    pub fn mesh_center(&self) -> Vec3 {
+        if self.mesh_positions.is_empty() {
+            return Vec3::ZERO;
+        }
+        let mut sum = Vec3::ZERO;
+        for p in &self.mesh_positions {
+            sum += Vec3::from(*p);
+        }
+        sum / self.mesh_positions.len() as f32
+    }
+
+    pub fn bounding_box(&self) -> (Vec3, Vec3) {
+        if self.mesh_positions.is_empty() {
+            return (Vec3::ZERO, Vec3::ZERO);
+        }
+        let mut bmin = Vec3::splat(f32::MAX);
+        let mut bmax = Vec3::splat(f32::MIN);
+        for p in &self.mesh_positions {
+            let v = Vec3::from(*p);
+            bmin = bmin.min(v);
+            bmax = bmax.max(v);
+        }
+        (bmin, bmax)
+    }
+
+    pub fn raw_triangles(&self) -> (&[[f32; 3]], &[u32]) {
+        (&self.mesh_positions, &self.mesh_indices)
+    }
+
+    pub fn vertex_position(&self, idx: u32) -> Vec3 {
+        Vec3::from(self.mesh_positions[idx as usize])
+    }
+
+    pub fn select_mesh_action(&self) -> bool {
+        true
     }
 
     pub fn dispatch_raycast(&self, device: &wgpu::Device, queue: &wgpu::Queue, ray: &Ray) -> wgpu::Buffer {
@@ -797,7 +848,7 @@ impl MeshPass {
 
 impl RenderPass for MeshPass {
     fn prepare(&mut self, queue: &wgpu::Queue, _camera: &Camera) {
-        let model = Model::new(Mat4::IDENTITY);
+        let model = Model::new(self.model_matrix);
         queue.write_buffer(&self.model_ubo, 0, bytemuck::cast_slice(&[model]));
         let light = Light::new(self.light_direction.normalize());
         queue.write_buffer(&self.light_ubo, 0, bytemuck::cast_slice(&[light]));

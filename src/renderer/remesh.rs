@@ -276,12 +276,12 @@ fn point_in_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> bool {
     u >= -1e-8 && u <= 1.0 + 1e-8 && v >= -1e-8 && v <= 1.0 + 1e-8 && w >= -1e-8 && w <= 1.0 + 1e-8
 }
 
-fn project_to_ndc(p: Vec3, view: Mat4, proj: Mat4) -> Vec2 {
+pub(crate) fn project_to_ndc(p: Vec3, view: Mat4, proj: Mat4) -> Vec2 {
     let clip = proj * view * p.extend(1.0);
     Vec2::new(clip.x / clip.w, clip.y / clip.w)
 }
 
-fn ndc_segment_distance(px: f32, py: f32, a: Vec2, b: Vec2) -> f32 {
+pub(crate) fn ndc_segment_distance(px: f32, py: f32, a: Vec2, b: Vec2) -> f32 {
     let ab = b - a;
     let len_sq = ab.length_squared();
     if len_sq < 1e-12 {
