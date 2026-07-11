@@ -3,7 +3,6 @@ mod half_edge;
 mod pass;
 mod passes;
 mod ray;
-mod remesh;
 mod wgpu;
 
 use std::cell::RefCell;
@@ -61,18 +60,6 @@ impl Renderer {
         self.inner.get_camera_info()
     }
 
-    pub fn remesh_toggle(&mut self) {
-        self.inner.remesh_toggle();
-    }
-
-    pub fn remesh_is_active(&self) -> bool {
-        self.inner.remesh_is_active()
-    }
-
-    pub fn remesh_is_dragging(&self) -> bool {
-        self.inner.remesh_is_dragging()
-    }
-
     pub fn handle_mousedown(&mut self, px: f64, py: f64) -> bool {
         self.inner.handle_mousedown(px, py)
     }
@@ -81,12 +68,12 @@ impl Renderer {
         self.inner.handle_mousemove(px, py);
     }
 
-    pub fn handle_mouseup(&mut self) {
-        self.inner.handle_mouseup();
+    pub fn handle_mouseup(&mut self) -> bool {
+        self.inner.handle_mouseup()
     }
 
-    pub fn remesh_handle_click(&mut self, px: f64, py: f64) -> bool {
-        self.inner.remesh_handle_click(px, py)
+    pub fn mesh_is_dragging(&self) -> bool {
+        self.inner.mesh_is_dragging()
     }
 
     pub fn toggle_select_mesh(&mut self) {
@@ -105,13 +92,6 @@ impl Renderer {
         self.inner.deselect_mesh();
     }
 
-    pub fn remesh_toggle_mesh(&mut self) {
-        self.inner.remesh_toggle_mesh();
-    }
-
-    pub fn remesh_show_mesh(&self) -> bool {
-        self.inner.remesh_show_mesh()
-    }
 }
 
 pub struct GpuRaycastOutcome {
@@ -202,14 +182,10 @@ fn update_debug_overlay(r: &Renderer) {
         f.borrow_mut().tick(now)
     });
 
-    let remesh_mode = r.remesh_is_active();
-    let show_mesh = r.remesh_show_mesh();
     let text = format!(
-        "FPS: {:.0}\n{}\nRemesh: {}  Mesh: {}\n",
+        "FPS: {:.0}\n{}\n",
         fps,
         format_mat4("View", view),
-        if remesh_mode { "ON" } else { "OFF" },
-        if show_mesh { "SHOW" } else { "HIDE" },
     );
     el.set_text_content(Some(&text));
     // 2. Drive the 3D CSS Gizmo
@@ -292,12 +268,10 @@ pub fn start_render_loop() {
 
                 RAYCAST_PENDING.with(|pending| {
                     if let Some((px, py)) = pending.borrow_mut().take() {
-                        if !r.remesh_is_active() {
-                            let w = r.canvas_width();
-                            let h = r.canvas_height();
-                            if w > 0.0 && h > 0.0 {
-                                r.raycast(px, py);
-                            }
+                        let w = r.canvas_width();
+                        let h = r.canvas_height();
+                        if w > 0.0 && h > 0.0 {
+                            r.raycast(px, py);
                         }
                     }
                 });

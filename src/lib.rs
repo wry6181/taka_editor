@@ -64,15 +64,13 @@ pub fn run() {
     let on_mousemove = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
         let cx = event.client_x() as f64;
         let cy = event.client_y() as f64;
+        renderer::RENDERER.with(|rc| {
+            if let Some(r) = rc.borrow_mut().as_mut() {
+                r.handle_mousemove(cx, cy);
+            }
+        });
         let is_dragging = renderer::RENDERER.with(|rc| {
-            rc.borrow_mut().as_mut().map_or(false, |r| {
-                if r.remesh_is_dragging() {
-                    r.handle_mousemove(cx, cy);
-                    true
-                } else {
-                    false
-                }
-            })
+            rc.borrow().as_ref().is_some_and(|r| r.mesh_is_dragging())
         });
         if !is_dragging {
             DRAGGING.with(|d| {
@@ -102,14 +100,7 @@ pub fn run() {
     // Mouseup → stop orbit drag, end gizmo drag, detect click
     let on_mouseup = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
         let was_drag = renderer::RENDERER.with(|rc| {
-            rc.borrow_mut().as_mut().map_or(false, |r| {
-                if r.remesh_is_dragging() {
-                    r.handle_mouseup();
-                    true
-                } else {
-                    false
-                }
-            })
+            rc.borrow_mut().as_mut().map_or(false, |r| r.handle_mouseup())
         });
         DRAGGING.with(|d| *d.borrow_mut() = false);
         if !was_drag {
@@ -120,27 +111,22 @@ pub fn run() {
                 if dx < 4 && dy < 4 {
                     let px = event.client_x() as f64;
                     let py = event.client_y() as f64;
-                    let consumed = renderer::RENDERER.with(|rc| {
-                        rc.borrow_mut().as_mut().map_or(false, |r| r.remesh_handle_click(px, py))
+                    // Try CPU raycast to select mesh
+                    let mesh_hit = renderer::RENDERER.with(|rc| {
+                        rc.borrow_mut().as_mut().map_or(false, |r| r.select_mesh_at_screen(px, py))
                     });
-                    if !consumed {
-                        // Try CPU raycast to select mesh (only when remesh is inactive)
-                        let mesh_hit = renderer::RENDERER.with(|rc| {
-                            rc.borrow_mut().as_mut().map_or(false, |r| r.select_mesh_at_screen(px, py))
-                        });
-                        if !mesh_hit {
-                            // Deselect mesh on empty space click
-                            renderer::RENDERER.with(|rc| {
-                                if let Some(r) = rc.borrow_mut().as_mut() {
-                                    if r.mesh_is_selected() {
-                                        r.deselect_mesh();
-                                    }
+                    if !mesh_hit {
+                        // Deselect mesh on empty space click
+                        renderer::RENDERER.with(|rc| {
+                            if let Some(r) = rc.borrow_mut().as_mut() {
+                                if r.mesh_is_selected() {
+                                    r.deselect_mesh();
                                 }
-                            });
-                            renderer::RAYCAST_PENDING.with(|p| {
-                                *p.borrow_mut() = Some((px, py));
-                            });
-                        }
+                            }
+                        });
+                        renderer::RAYCAST_PENDING.with(|p| {
+                            *p.borrow_mut() = Some((px, py));
+                        });
                     }
                 }
             });
@@ -177,22 +163,10 @@ pub fn run() {
         .expect("failed to add wheel listener");
     on_wheel.forget();
 
-    // Keydown → 'R' toggles remesh mode, 'M' toggles mesh visibility, 'G' selects mesh
+    // Keydown → 'G' selects mesh
     let on_keydown = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
         let key = event.key();
-        if key == "r" || key == "R" {
-            renderer::RENDERER.with(|rc| {
-                if let Some(r) = rc.borrow_mut().as_mut() {
-                    r.remesh_toggle();
-                }
-            });
-        } else if key == "m" || key == "M" {
-            renderer::RENDERER.with(|rc| {
-                if let Some(r) = rc.borrow_mut().as_mut() {
-                    r.remesh_toggle_mesh();
-                }
-            });
-        } else if key == "g" || key == "G" {
+        if key == "g" || key == "G" {
             renderer::RENDERER.with(|rc| {
                 if let Some(r) = rc.borrow_mut().as_mut() {
                     r.toggle_select_mesh();
