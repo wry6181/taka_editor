@@ -4,11 +4,19 @@ use web_sys::HtmlCanvasElement;
 use wgpu::SurfaceTarget;
 
 use super::camera::Camera;
+use super::moveable::{Gizmo, Moveable};
 use super::pass::RenderPass;
 use super::passes::grid_pass::GridPass;
 use super::passes::line_pass::LinePass;
+use super::passes::image_pass::ImagePass;
 use super::passes::mesh_pass::{MeshPass, GpuHitResult};
 use super::ray::Ray;
+
+enum Selection {
+    None,
+    Mesh,
+    Image,
+}
 
 
 #[derive(Debug, Default, Clone, Copy, Pod, Zeroable)]
@@ -37,6 +45,7 @@ pub struct WgpuRenderer {
     camera: Camera,
     mesh_pass: MeshPass,
     line_pass: LinePass,
+    image_pass: ImagePass,
     grid_pass: GridPass,
     clear_color: wgpu::Color,
     axis_lines: Vec<(Vec3, Vec3, Vec3)>,
@@ -45,13 +54,8 @@ pub struct WgpuRenderer {
     debug_ray_hit: Option<Vec3>,
     gpu_raycast_active: bool,
     show_mesh: bool,
-    mesh_selected: bool,
-    mesh_model_matrix: Mat4,
-    mesh_drag_axis: Option<usize>,
-    mesh_drag_start_mouse: Option<(f64, f64)>,
-    mesh_drag_start_pos: Option<Vec3>,
-    mesh_drag_start_matrix: Option<Mat4>,
-    mesh_highlight_color: Vec3,
+    selection: Selection,
+    gizmo: Gizmo,
 }
 
 impl WgpuRenderer {
@@ -131,6 +135,7 @@ impl WgpuRenderer {
 
         let mesh_pass = MeshPass::new(&device, &queue, config.format, &globals_bgl, globals_bind_group.clone());
         let line_pass = LinePass::new(&device, config.format, &globals_bgl, globals_bind_group.clone());
+        let image_pass = ImagePass::new(&device, config.format, &globals_bgl, globals_bind_group.clone());
 
         let mut grid_pass = GridPass::new(&device, config.format, &globals_bgl, globals_bind_group.clone());
         grid_pass.set_grid(&device, &queue, 1000.0, 100, 5);
@@ -150,6 +155,7 @@ impl WgpuRenderer {
             camera,
             mesh_pass,
             line_pass,
+            image_pass,
             grid_pass,
             clear_color: wgpu::Color { r: 0.24, g: 0.24, b: 0.24, a: 1.0 },
             axis_lines: Vec::new(),
@@ -158,13 +164,8 @@ impl WgpuRenderer {
             debug_ray_hit: None,
             gpu_raycast_active: false,
             show_mesh: true,
-            mesh_selected: false,
-            mesh_model_matrix: Mat4::IDENTITY,
-            mesh_drag_axis: None,
-            mesh_drag_start_mouse: None,
-            mesh_drag_start_pos: None,
-            mesh_drag_start_matrix: None,
-            mesh_highlight_color: Vec3::new(1.0, 0.5, 0.0),
+            selection: Selection::None,
+            gizmo: Gizmo::new(),
         })
     }
 
@@ -187,6 +188,7 @@ impl WgpuRenderer {
 
         self.mesh_pass.prepare(&self.queue, &self.camera);
         self.line_pass.prepare(&self.queue, &self.camera);
+        self.image_pass.prepare(&self.queue, &self.camera);
         self.grid_pass.prepare(&self.queue, &self.camera);
 
         let frame = match self.surface.get_current_texture() {
@@ -225,6 +227,7 @@ impl WgpuRenderer {
                 self.mesh_pass.render(&mut rpass);
             }
             self.grid_pass.render(&mut rpass);
+            self.image_pass.render(&mut rpass);
             self.line_pass.render(&mut rpass);
         }
         self.queue.submit(Some(encoder.finish()));
@@ -262,6 +265,10 @@ impl WgpuRenderer {
 
     pub fn set_light_direction(&mut self, direction: Vec3) {
         self.mesh_pass.set_light_direction(direction);
+    }
+
+    pub fn set_image(&mut self, colors: &[[u8; 4]], positions: &[(u32, u32)]) {
+        self.image_pass.set_image(&self.device, &self.queue, colors, positions);
     }
 
     pub fn set_lines(&mut self, lines: &[(Vec3, Vec3, Vec3)]) {
@@ -303,26 +310,19 @@ impl WgpuRenderer {
             }
         }
 
-        // Mesh highlight + gizmo when selected
-        if self.mesh_selected && self.show_mesh {
-            let center = self.mesh_model_matrix.transform_point3(self.mesh_pass.mesh_center());
-            let (bmin, bmax) = self.mesh_pass.bounding_box();
-            let size = (bmax - bmin).length();
-            let axis_len = (size * 0.8).max(2.0);
+        // Highlight + gizmo for selected object
+        let selected: Option<&dyn Moveable> = match &self.selection {
+            Selection::Mesh => Some(&self.mesh_pass as &dyn Moveable),
+            Selection::Image => Some(&self.image_pass as &dyn Moveable),
+            Selection::None => None,
+        };
+        if let Some(movable) = selected {
+            let model = movable.model_matrix();
+            let center = model.transform_point3(movable.center());
+            let axis_len = (movable.bounding_size() * 0.8).max(2.0);
 
-            // Highlight: wireframe overlay in orange
-            let highlight_color = Vec3::new(1.0, 0.5, 0.1);
-            let (_, indices) = self.mesh_pass.raw_triangles();
-            for tri in indices.chunks_exact(3) {
-                let p0 = self.mesh_model_matrix.transform_point3(self.mesh_pass.vertex_position(tri[0]));
-                let p1 = self.mesh_model_matrix.transform_point3(self.mesh_pass.vertex_position(tri[1]));
-                let p2 = self.mesh_model_matrix.transform_point3(self.mesh_pass.vertex_position(tri[2]));
-                all.push((p0, p1, highlight_color));
-                all.push((p1, p2, highlight_color));
-                all.push((p2, p0, highlight_color));
-            }
+            all.extend(movable.gizmo_lines(&model));
 
-            // Gizmo axes (from mesh center, scaled to mesh size)
             let gc = center;
             all.push((gc, gc + Vec3::X * axis_len, Vec3::new(1.0, 0.0, 0.0)));
             all.push((gc, gc + Vec3::Y * axis_len, Vec3::new(0.0, 1.0, 0.0)));
@@ -353,7 +353,7 @@ impl WgpuRenderer {
         self.debug_ray_hit = None;
         self.gpu_raycast_active = true;
 
-        let inv_model = self.mesh_model_matrix.inverse();
+        let inv_model = self.mesh_pass.model_matrix().inverse();
         let model_ray = Ray {
             origin: inv_model.transform_point3(ray.origin),
             direction: inv_model.transform_vector3(ray.direction),
@@ -425,112 +425,68 @@ impl WgpuRenderer {
     }
 
     pub fn mesh_is_dragging(&self) -> bool {
-        self.mesh_drag_axis.is_some()
+        self.gizmo.is_dragging()
     }
 
     pub fn handle_mousedown(&mut self, px: f64, py: f64) -> bool {
-        // Mesh gizmo hit test
-        if self.mesh_selected {
-            let w = self.config.width as f64;
-            let h = self.config.height as f64;
-            let ndc_x = (2.0 * px / w - 1.0) as f32;
-            let ndc_y = (1.0 - 2.0 * py / h) as f32;
-            let (view, proj) = self.get_view_proj();
-            if let Some(axis) = self.mesh_gizmo_hit_screen(ndc_x, ndc_y, view, proj, 0.04) {
-                self.mesh_drag_axis = Some(axis);
-                self.mesh_drag_start_mouse = Some((px, py));
-                let center = self.mesh_model_matrix.transform_point3(self.mesh_pass.mesh_center());
-                self.mesh_drag_start_pos = Some(center);
-                self.mesh_drag_start_matrix = Some(self.mesh_model_matrix);
-                return true;
-            }
+        let w = self.config.width as f64;
+        let h = self.config.height as f64;
+        let ndc_x = (2.0 * px / w - 1.0) as f32;
+        let ndc_y = (1.0 - 2.0 * py / h) as f32;
+        let (view, proj) = self.get_view_proj();
+
+        let movable: Option<&mut dyn Moveable> = match &mut self.selection {
+            Selection::Mesh => Some(&mut self.mesh_pass as &mut dyn Moveable),
+            Selection::Image => Some(&mut self.image_pass as &mut dyn Moveable),
+            Selection::None => None,
+        };
+        let Some(movable) = movable else { return false };
+
+        if let Some(axis) = self.gizmo.hit_test(movable, ndc_x, ndc_y, view, proj, 0.04) {
+            self.gizmo.drag_axis = Some(axis);
+            let center = movable.model_matrix().transform_point3(movable.center());
+            self.gizmo.start_drag((px, py), center, movable.model_matrix());
+            return true;
         }
         false
     }
 
     pub fn handle_mousemove(&mut self, px: f64, py: f64) {
-        if let Some(axis) = self.mesh_drag_axis {
-            self.mesh_drag_mousemove(axis, px, py);
-        }
-    }
-
-    pub fn handle_mouseup(&mut self) -> bool {
-        let had_drag = self.mesh_drag_axis.is_some();
-        self.mesh_drag_axis = None;
-        had_drag
-    }
-
-    fn mesh_gizmo_hit_screen(&self, ndc_x: f32, ndc_y: f32, view: Mat4, proj: Mat4, threshold: f32) -> Option<usize> {
-        let center = self.mesh_model_matrix.transform_point3(self.mesh_pass.mesh_center());
-        let (bmin, bmax) = self.mesh_pass.bounding_box();
-        let size = (bmax - bmin).length();
-        let axis_len = (size * 0.8).max(2.0);
-
-        for axis in 0..3 {
-            let dir = match axis {
-                0 => Vec3::X,
-                1 => Vec3::Y,
-                _ => Vec3::Z,
-            };
-            let start_ndc = project_to_ndc(center, view, proj);
-            let end_ndc = project_to_ndc(center + dir * axis_len, view, proj);
-            let dist = ndc_segment_distance(ndc_x, ndc_y, start_ndc, end_ndc);
-            if dist < threshold {
-                return Some(axis);
-            }
-        }
-        None
-    }
-
-    fn mesh_drag_mousemove(&mut self, axis: usize, px: f64, py: f64) {
-        let Some((sx, sy)) = self.mesh_drag_start_mouse else { return };
-        let Some(start_pos) = self.mesh_drag_start_pos else { return };
-        let Some(start_matrix) = self.mesh_drag_start_matrix else { return };
-
+        let Some(axis) = self.gizmo.drag_axis else { return };
         self.debug_ray_hit = None;
 
-        let w = self.config.width;
-        let h = self.config.height;
         let view = self.camera.get_view_matrix();
         let proj = self.camera.get_projection_matrix();
-        let vp = proj * view;
+        let (vw, vh) = (self.config.width, self.config.height);
 
-        let screen_vec = |dir: Vec3| -> (f64, f64) {
-            let base = vp.project_point3(start_pos);
-            let tip = vp.project_point3(start_pos + dir);
-            let bx = (base.x as f64 + 1.0) * 0.5 * w as f64;
-            let by = (1.0 - base.y as f64) * 0.5 * h as f64;
-            let tx = (tip.x as f64 + 1.0) * 0.5 * w as f64;
-            let ty = (1.0 - tip.y as f64) * 0.5 * h as f64;
-            (tx - bx, ty - by)
+        let movable: Option<&mut dyn Moveable> = match &mut self.selection {
+            Selection::Mesh => Some(&mut self.mesh_pass as &mut dyn Moveable),
+            Selection::Image => Some(&mut self.image_pass as &mut dyn Moveable),
+            Selection::None => None,
         };
+        let Some(movable) = movable else { return };
 
-        let dx = px - sx;
-        let dy = py - sy;
-
-        let axis_dir = match axis {
-            0 => Vec3::X,
-            1 => Vec3::Y,
-            _ => Vec3::Z,
-        };
-        let (svx, svy) = screen_vec(axis_dir);
-        let len_sq = svx * svx + svy * svy;
-        if len_sq < 1.0 { return; }
-        let world_offset = ((dx * svx + dy * svy) / len_sq) as f32;
-        let translation = axis_dir * world_offset;
-        let start_trans = start_matrix.w_axis.truncate();
-        self.mesh_model_matrix = Mat4::from_translation(start_trans + translation);
-        self.mesh_pass.set_model_matrix(self.mesh_model_matrix);
+        self.gizmo.apply_drag(movable, axis, px, py, vw, vh, view, proj);
         self.flush_lines();
     }
 
+    pub fn handle_mouseup(&mut self) -> bool {
+        self.gizmo.end_drag()
+    }
+
+
     pub fn toggle_select_mesh(&mut self) {
-        self.mesh_selected = !self.mesh_selected;
+        self.selection = match self.selection {
+            Selection::Mesh => Selection::None,
+            _ => Selection::Mesh,
+        };
+        self.mesh_pass.set_selected(matches!(self.selection, Selection::Mesh));
+        self.image_pass.set_selected(false);
         self.flush_lines();
     }
 
     pub fn mesh_is_selected(&self) -> bool {
-        self.mesh_selected
+        matches!(self.selection, Selection::Mesh)
     }
 
     pub fn select_mesh_at_screen(&mut self, px: f64, py: f64) -> bool {
@@ -540,8 +496,11 @@ impl WgpuRenderer {
         let ndc_y = (1.0 - 2.0 * py / h) as f32;
         let inv_vp = self.get_inv_vp();
         let ray = Ray::from_screen(ndc_x, ndc_y, inv_vp);
-        if self.mesh_pass.ray_intersect_with_model(&ray, &self.mesh_model_matrix).is_some() {
-            self.mesh_selected = true;
+        let model = self.mesh_pass.model_matrix();
+        if self.mesh_pass.ray_intersect_with_model(&ray, &model).is_some() {
+            self.selection = Selection::Mesh;
+            self.mesh_pass.set_selected(true);
+            self.image_pass.set_selected(false);
             self.flush_lines();
             true
         } else {
@@ -550,20 +509,39 @@ impl WgpuRenderer {
     }
 
     pub fn deselect_mesh(&mut self) {
-        self.mesh_selected = false;
+        self.selection = Selection::None;
+        self.mesh_pass.set_selected(false);
+        self.image_pass.set_selected(false);
+        self.flush_lines();
+    }
+
+    pub fn select_image_at_screen(&mut self, px: f64, py: f64) -> bool {
+        let w = self.config.width as f64;
+        let h = self.config.height as f64;
+        let ndc_x = (2.0 * px / w - 1.0) as f32;
+        let ndc_y = (1.0 - 2.0 * py / h) as f32;
+        let inv_vp = self.get_inv_vp();
+        let ray = Ray::from_screen(ndc_x, ndc_y, inv_vp);
+        let model = self.image_pass.model_matrix();
+        if self.image_pass.ray_intersect(&ray, &model).is_some() {
+            self.selection = Selection::Image;
+            self.mesh_pass.set_selected(false);
+            self.image_pass.set_selected(true);
+            self.flush_lines();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn toggle_select_image(&mut self) {
+        self.selection = match self.selection {
+            Selection::Image => Selection::None,
+            _ => Selection::Image,
+        };
+        self.mesh_pass.set_selected(false);
+        self.image_pass.set_selected(matches!(self.selection, Selection::Image));
         self.flush_lines();
     }
 }
 
-fn project_to_ndc(p: Vec3, view: Mat4, proj: Mat4) -> glam::Vec2 {
-    let clip = proj * view * p.extend(1.0);
-    glam::vec2(clip.x / clip.w, clip.y / clip.w)
-}
-
-fn ndc_segment_distance(px: f32, py: f32, a: glam::Vec2, b: glam::Vec2) -> f32 {
-    let ab = b - a;
-    let ap = glam::vec2(px - a.x, py - a.y);
-    let t = (ap.dot(ab) / ab.dot(ab)).clamp(0.0, 1.0);
-    let closest = a + ab * t;
-    glam::vec2(px - closest.x, py - closest.y).length()
-}

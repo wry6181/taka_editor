@@ -5,6 +5,7 @@ use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
 
 use crate::renderer::camera::Camera;
+use crate::renderer::moveable::Moveable;
 use crate::renderer::pass::RenderPass;
 use crate::renderer::ray::Ray;
 
@@ -413,6 +414,7 @@ pub struct MeshPass {
     compute_pipeline: wgpu::ComputePipeline,
     raycast_bind_group: wgpu::BindGroup,
     model_matrix: Mat4,
+    selected: bool,
 }
 
 impl MeshPass {
@@ -755,6 +757,7 @@ impl MeshPass {
             compute_pipeline,
             raycast_bind_group,
             model_matrix: Mat4::IDENTITY,
+            selected: false,
         }
     }
 
@@ -843,6 +846,56 @@ impl MeshPass {
         queue.submit(Some(encoder.finish()));
 
         self.staging_buffer.clone()
+    }
+}
+
+impl Moveable for MeshPass {
+    fn model_matrix(&self) -> Mat4 {
+        self.model_matrix
+    }
+
+    fn set_model_matrix(&mut self, m: Mat4) {
+        self.model_matrix = m;
+    }
+
+    fn is_selected(&self) -> bool {
+        self.selected
+    }
+
+    fn set_selected(&mut self, selected: bool) {
+        self.selected = selected;
+    }
+
+    fn center(&self) -> Vec3 {
+        self.mesh_center()
+    }
+
+    fn bounding_size(&self) -> f32 {
+        let (bmin, bmax) = self.bounding_box();
+        (bmax - bmin).length()
+    }
+
+    fn ray_intersect(&self, ray: &Ray, model: &Mat4) -> Option<Vec3> {
+        self.ray_intersect_with_model(ray, model)
+    }
+
+    fn gizmo_color(&self) -> Vec3 {
+        Vec3::new(1.0, 0.5, 0.1)
+    }
+
+    fn gizmo_lines(&self, model: &Mat4) -> Vec<(Vec3, Vec3, Vec3)> {
+        let highlight_color = Vec3::new(1.0, 0.5, 0.1);
+        let (_, indices) = self.raw_triangles();
+        let mut lines = Vec::with_capacity(indices.len());
+        for tri in indices.chunks_exact(3) {
+            let p0 = model.transform_point3(self.vertex_position(tri[0]));
+            let p1 = model.transform_point3(self.vertex_position(tri[1]));
+            let p2 = model.transform_point3(self.vertex_position(tri[2]));
+            lines.push((p0, p1, highlight_color));
+            lines.push((p1, p2, highlight_color));
+            lines.push((p2, p0, highlight_color));
+        }
+        lines
     }
 }
 

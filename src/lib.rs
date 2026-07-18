@@ -1,8 +1,11 @@
+mod file_loader;
 mod renderer;
 
 use std::cell::RefCell;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
+
+use crate::file_loader::load_image_from_bytes;
 
 thread_local! {
     static DRAGGING: RefCell<bool> = RefCell::new(false);
@@ -116,17 +119,21 @@ pub fn run() {
                         rc.borrow_mut().as_mut().map_or(false, |r| r.select_mesh_at_screen(px, py))
                     });
                     if !mesh_hit {
-                        // Deselect mesh on empty space click
-                        renderer::RENDERER.with(|rc| {
-                            if let Some(r) = rc.borrow_mut().as_mut() {
-                                if r.mesh_is_selected() {
-                                    r.deselect_mesh();
+                        let image_hit = renderer::RENDERER.with(|rc| {
+                            rc.borrow_mut().as_mut().map_or(false, |r| r.select_image_at_screen(px, py))
+                        });
+                        if !image_hit {
+                            renderer::RENDERER.with(|rc| {
+                                if let Some(r) = rc.borrow_mut().as_mut() {
+                                    if r.mesh_is_selected() {
+                                        r.deselect_mesh();
+                                    }
                                 }
-                            }
-                        });
-                        renderer::RAYCAST_PENDING.with(|p| {
-                            *p.borrow_mut() = Some((px, py));
-                        });
+                            });
+                            renderer::RAYCAST_PENDING.with(|p| {
+                                *p.borrow_mut() = Some((px, py));
+                            });
+                        }
                     }
                 }
             });
@@ -173,11 +180,22 @@ pub fn run() {
                 }
             });
         }
+        if key == "i" || key == "I" {
+            renderer::RENDERER.with(|rc| {
+                if let Some(r) = rc.borrow_mut().as_mut() {
+                    r.toggle_select_image();
+                }
+            });
+        }
     }) as Box<dyn FnMut(_)>);
     window
         .add_event_listener_with_callback("keydown", on_keydown.as_ref().unchecked_ref())
         .expect("failed to add keydown listener");
     on_keydown.forget();
+
+    if let Ok(image) = load_image_from_bytes(include_bytes!("../data/test.png")) {
+        renderer::add_image(image);
+    }
 
     renderer::start_render_loop();
 }

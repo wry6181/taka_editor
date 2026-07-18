@@ -42,6 +42,21 @@ impl Ray {
         Some(t)
     }
 
+    pub fn intersect_aabb(&self, min: Vec3, max: Vec3) -> Option<f32> {
+        let inv_dir = Vec3::new(1.0 / self.direction.x, 1.0 / self.direction.y, 1.0 / self.direction.z);
+        let t1 = (min - self.origin) * inv_dir;
+        let t2 = (max - self.origin) * inv_dir;
+        let tmin = t1.min(t2);
+        let tmax = t1.max(t2);
+        let t_near = tmin.x.max(tmin.y).max(tmin.z);
+        let t_far = tmax.x.min(tmax.y).min(tmax.z);
+        if t_near <= t_far && t_far >= 0.0 {
+            Some(if t_near >= 0.0 { t_near } else { t_far })
+        } else {
+            None
+        }
+    }
+
     pub fn intersect_mesh(&self, positions: &[[f32; 3]], indices: &[u32]) -> Option<Vec3> {
         let mut best: Option<(f32, Vec3)> = None;
         for tri in indices.chunks_exact(3) {

@@ -1,10 +1,13 @@
 mod camera;
 mod half_edge;
+mod moveable;
 mod pass;
 mod passes;
 mod ray;
 mod wgpu;
 
+
+use crate::file_loader::TakaImage;
 use std::cell::RefCell;
 use std::rc::Rc;
 use glam::Mat4;
@@ -80,12 +83,20 @@ impl Renderer {
         self.inner.toggle_select_mesh();
     }
 
+    pub fn toggle_select_image(&mut self) {
+        self.inner.toggle_select_image();
+    }
+
     pub fn mesh_is_selected(&self) -> bool {
         self.inner.mesh_is_selected()
     }
 
     pub fn select_mesh_at_screen(&mut self, px: f64, py: f64) -> bool {
         self.inner.select_mesh_at_screen(px, py)
+    }
+
+    pub fn select_image_at_screen(&mut self, px: f64, py: f64) -> bool {
+        self.inner.select_image_at_screen(px, py)
     }
 
     pub fn deselect_mesh(&mut self) {
@@ -107,6 +118,7 @@ thread_local! {
     static FPS_STATE: RefCell<FpsCounter> = RefCell::new(FpsCounter::new());
     pub static RAYCAST_PENDING: RefCell<Option<(f64, f64)>> = const { RefCell::new(None) };
     pub static GPU_RAYCAST_RESULT: RefCell<Option<GpuRaycastOutcome>> = const { RefCell::new(None) };
+    static PENDING_IMAGE: RefCell<Option<TakaImage>> = const { RefCell::new(None) };
 }
 
 struct FpsCounter {
@@ -242,6 +254,11 @@ pub fn init_renderer(canvas: HtmlCanvasElement) {
                         ]);
                     }
                 });
+                PENDING_IMAGE.with(|p| {
+                    if let Some(img) = p.borrow_mut().take() {
+                        add_image(img);
+                    }
+                });
             }
             Err(e) => {
                 web_sys::console::log_1(&format!("wgpu init failed: {}", e).into());
@@ -294,5 +311,19 @@ pub fn start_render_loop() {
         window
             .request_animation_frame(cb.as_ref().unchecked_ref())
             .expect("request_animation_frame failed");
+    }
+}
+
+pub fn add_image(image: TakaImage) {
+    let applied = RENDERER.with(|rc| {
+        if let Some(r) = rc.borrow_mut().as_mut() {
+            r.inner.set_image(&image.color, &image.position);
+            true
+        } else {
+            false
+        }
+    });
+    if !applied {
+        PENDING_IMAGE.with(|p| *p.borrow_mut() = Some(image));
     }
 }
