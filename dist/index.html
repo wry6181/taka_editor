@@ -76,7 +76,7 @@
     }
   </style>
   <title>Canvas Test</title>
-<link rel="modulepreload" href="/taka_editor-cd3ff4c1c5d03a86.js" crossorigin="anonymous" integrity="sha384-RXwpd4OjFxQKVYyoNNPeHp6a0Qbuysc9yIpUiTirANha/6L9vSKa0zLbFs37zJuo"><link rel="preload" href="/taka_editor-cd3ff4c1c5d03a86_bg.wasm" crossorigin="anonymous" integrity="sha384-nNqVWyNLIiWcqF4tt6X8fTnyIzK2mvnycPlTjgJvlCtjgZ1pNHQh563VVRZb4Qu/" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/taka_editor-8c44358668d17d9b.js" crossorigin="anonymous" integrity="sha384-ixXxjTYyAiCfdN5t3aN7W09Zo+AHWs7eHtCD8ntQgKJhg/iNvuSItw4njO32reG+"><link rel="preload" href="/taka_editor-8c44358668d17d9b_bg.wasm" crossorigin="anonymous" integrity="sha384-02RFEmGTeFV0+SocM3xRWuEVXvyweIvtEepUw7ZiYvAeGEMn1aMYs4Z4oxulB33X" as="fetch" type="application/wasm"></head>
 <body>
   <canvas id="viewport"></canvas>
   <div id="debug-overlay"></div>
@@ -91,8 +91,8 @@
   </div>
 
 <script type="module">
-import init, * as bindings from '/taka_editor-cd3ff4c1c5d03a86.js';
-const wasm = await init({ module_or_path: '/taka_editor-cd3ff4c1c5d03a86_bg.wasm' });
+import init, * as bindings from '/taka_editor-8c44358668d17d9b.js';
+const wasm = await init({ module_or_path: '/taka_editor-8c44358668d17d9b_bg.wasm' });
 
 
 window.wasmBindings = bindings;

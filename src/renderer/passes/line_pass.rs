@@ -33,51 +33,20 @@ impl LinePass {
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(SHADER)),
         });
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("line_pipeline_layout"),
-            bind_group_layouts: &[Some(globals_bgl)],
-            immediate_size: 0,
-        });
+        let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("line_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<LineVertex>() as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3],
-                }],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = crate::renderer::gpu::kernel::RenderKernelBuilder::new(
+            device, "line", &shader, format,
+        )
+            .bind_group_layouts(&[globals_bgl])
+            .vertex_layout(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<LineVertex>() as wgpu::BufferAddress,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &vertex_attributes,
+            })
+            .depth(wgpu::TextureFormat::Depth32Float, false, wgpu::CompareFunction::LessEqual)
+            .topology(wgpu::PrimitiveTopology::LineList)
+            .build();
 
         let initial_capacity = 4096;
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {

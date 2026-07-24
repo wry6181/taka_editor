@@ -42,19 +42,11 @@ impl ImagePass {
         globals_bgl: &wgpu::BindGroupLayout,
         globals_bind_group: wgpu::BindGroup,
     ) -> Self {
-        let model_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("image_model_bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<ModelUniform>() as u64),
-                },
-                count: None,
-            }],
-        });
+        use wgpu::ShaderStages;
+
+        let model_bgl = crate::bgl!(device, "image_model_bgl", [
+            0 => ShaderStages::VERTEX, crate::renderer::gpu::binding_types::uniform::<ModelUniform>(),
+        ]);
 
         let model_ubo = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("image_model_ubo"),
@@ -63,68 +55,29 @@ impl ImagePass {
             mapped_at_creation: false,
         });
 
-        let model_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("image_model_bind_group"),
-            layout: &model_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: model_ubo.as_entire_binding(),
-            }],
-        });
+        let model_bind_group = crate::bind_group!(device, "image_model_bind_group", &model_bgl, [
+            0 => model_ubo.as_entire_binding(),
+        ]);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("image_shader"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(SHADER)),
         });
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("image_pipeline_layout"),
-            bind_group_layouts: &[Some(globals_bgl), Some(&model_bgl)],
-            immediate_size: 0,
-        });
+        let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Uint8x4];
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("image_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<ImageVertex>() as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x3,
-                        1 => Uint8x4,
-                    ],
-                }],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = crate::renderer::gpu::kernel::RenderKernelBuilder::new(
+            device, "image", &shader, format,
+        )
+            .bind_group_layouts(&[globals_bgl, &model_bgl])
+            .vertex_layout(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<ImageVertex>() as wgpu::BufferAddress,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &vertex_attributes,
+            })
+            .depth(wgpu::TextureFormat::Depth32Float, false, wgpu::CompareFunction::LessEqual)
+            .blend(wgpu::BlendState::ALPHA_BLENDING)
+            .build();
 
         let initial_capacity = 4096;
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {

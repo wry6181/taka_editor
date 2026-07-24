@@ -5,9 +5,12 @@ use glam::{Mat4, Vec3};
 use wgpu::util::DeviceExt;
 
 use crate::renderer::camera::Camera;
+use crate::renderer::gpu::buffer::{GpuBuffer, Readback};
+use crate::renderer::gpu::kernel::ComputeKernel;
 use crate::renderer::moveable::Moveable;
 use crate::renderer::pass::RenderPass;
 use crate::renderer::ray::Ray;
+use crate::{bgl, bind_group};
 
 const SHADER: &str = include_str!("../shaders/editor.wgsl");
 const GLB_DATA: &[u8] = include_bytes!("../../../data/gameboy.glb");
@@ -406,13 +409,13 @@ pub struct MeshPass {
     light_direction: Vec3,
     mesh_positions: Vec<[f32; 3]>,
     mesh_indices: Vec<u32>,
-    position_storage: wgpu::Buffer,
-    index_storage: wgpu::Buffer,
-    ray_ubo: wgpu::Buffer,
-    result_ssbo: wgpu::Buffer,
-    staging_buffer: wgpu::Buffer,
-    compute_pipeline: wgpu::ComputePipeline,
+    position_storage: GpuBuffer<[f32; 4]>,
+    index_storage: GpuBuffer<u32>,
+    ray_ubo: GpuBuffer<GpuRayUniform>,
+    result_ssbo: GpuBuffer<GpuHitResult>,
+    staging: Readback<GpuHitResult>,
     raycast_bind_group: wgpu::BindGroup,
+    raycast_kernel: ComputeKernel,
     model_matrix: Mat4,
     selected: bool,
 }
@@ -426,149 +429,44 @@ impl MeshPass {
         globals_bind_group: wgpu::BindGroup,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
+            label: Some("mesh_shader"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(SHADER)),
         });
 
-        let model_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("bind_group_layout::model"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<Model>() as u64),
-                },
-                count: None,
-            }],
-        });
+        use crate::renderer::gpu::binding_types;
+        use wgpu::ShaderStages;
 
-        let light_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("bind_group_layout::light"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<Light>() as u64),
-                },
-                count: None,
-            }],
-        });
+        let model_bgl = bgl!(device, "bind_group_layout::model", [
+            0 => ShaderStages::VERTEX, binding_types::uniform::<Model>(),
+        ]);
 
-        let material_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("bind_group_layout::material"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<MaterialFactors>() as u64),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 6,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+        let light_bgl = bgl!(device, "bind_group_layout::light", [
+            0 => ShaderStages::FRAGMENT, binding_types::uniform::<Light>(),
+        ]);
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[Some(globals_bgl), Some(&model_bgl), Some(&material_bgl), Some(&light_bgl)],
-            immediate_size: 0,
-        });
+        let material_bgl = bgl!(device, "bind_group_layout::material", [
+            0 => ShaderStages::FRAGMENT, binding_types::uniform::<MaterialFactors>(),
+            1 => ShaderStages::FRAGMENT, binding_types::texture2d(),
+            2 => ShaderStages::FRAGMENT, binding_types::sampler(),
+            3 => ShaderStages::FRAGMENT, binding_types::texture2d(),
+            4 => ShaderStages::FRAGMENT, binding_types::sampler(),
+            5 => ShaderStages::FRAGMENT, binding_types::texture2d(),
+            6 => ShaderStages::FRAGMENT, binding_types::sampler(),
+        ]);
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: None,
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x3,
-                        1 => Float32x2,
-                        2 => Float32x3,
-                        3 => Float32x4,
-                        4 => Float32x3,
-                    ],
-                }],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x3, 3 => Float32x4, 4 => Float32x3];
+
+        let pipeline = crate::renderer::gpu::kernel::RenderKernelBuilder::new(
+            device, "mesh", &shader, format,
+        )
+            .bind_group_layouts(&[globals_bgl, &model_bgl, &material_bgl, &light_bgl])
+            .vertex_layout(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &vertex_attributes,
+            })
+            .depth(wgpu::TextureFormat::Depth32Float, true, wgpu::CompareFunction::Less)
+            .build();
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("sampler::default"),
@@ -603,11 +501,9 @@ impl MeshPass {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let model_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("bind_group::model"),
-            layout: &model_bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: model_ubo.as_entire_binding() }],
-        });
+        let model_bind_group = bind_group!(device, "bind_group::model", &model_bgl, [
+            0 => model_ubo.as_entire_binding(),
+        ]);
 
         let light_ubo = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ubo::light"),
@@ -615,126 +511,61 @@ impl MeshPass {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let light_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("bind_group::light"),
-            layout: &light_bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: light_ubo.as_entire_binding() }],
-        });
-
-        let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("raycast_compute"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(
-                include_str!("../shaders/raycast.wgsl"),
-            )),
-        });
+        let light_bind_group = bind_group!(device, "bind_group::light", &light_bgl, [
+            0 => light_ubo.as_entire_binding(),
+        ]);
 
         let padded_positions: Vec<[f32; 4]> =
             mesh_positions.iter().map(|p| [p[0], p[1], p[2], 0.0]).collect();
-        let position_storage = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("buffer::positions_storage"),
-            contents: bytemuck::cast_slice(&padded_positions),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let position_storage = GpuBuffer::<[f32; 4]>::storage_init(device, "buffer::positions_storage", &padded_positions);
 
-        let index_storage = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("buffer::indices_storage"),
-            contents: bytemuck::cast_slice(&mesh_indices),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let index_storage = GpuBuffer::<u32>::storage_init(device, "buffer::indices_storage", &mesh_indices);
 
-        let ray_ubo = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("ubo::ray"),
-            size: std::mem::size_of::<GpuRayUniform>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let ray_ubo = GpuBuffer::<GpuRayUniform>::uniform(device, "ubo::ray");
 
-        let result_size = std::mem::size_of::<GpuHitResult>() as u64;
-        let result_ssbo = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("ssbo::raycast_result"),
-            size: result_size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let result_ssbo = GpuBuffer::<GpuHitResult>::storage_rw(device, "ssbo::raycast_result", 1);
 
-        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("buffer::raycast_staging"),
-            size: result_size,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let staging = Readback::<GpuHitResult>::new(device, "buffer::raycast_staging");
 
-        let raycast_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("bind_group_layout::raycast"),
-            entries: &[
+        let raycast_kernel = ComputeKernel::new(
+            device,
+            "raycast",
+            include_str!("../shaders/raycast.wgsl"),
+            "cs_main",
+            &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
+                    visibility: ShaderStages::COMPUTE,
+                    ty: binding_types::storage_ro(),
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
+                    visibility: ShaderStages::COMPUTE,
+                    ty: binding_types::storage_ro(),
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<GpuRayUniform>() as u64),
-                    },
+                    visibility: ShaderStages::COMPUTE,
+                    ty: binding_types::uniform::<GpuRayUniform>(),
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
+                    visibility: ShaderStages::COMPUTE,
+                    ty: binding_types::storage_rw(),
                     count: None,
                 },
             ],
-        });
+        );
 
-        let compute_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("pipeline_layout::raycast"),
-            bind_group_layouts: &[Some(&raycast_bgl)],
-            immediate_size: 0,
-        });
-
-        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("pipeline::raycast"),
-            layout: Some(&compute_pipeline_layout),
-            module: &compute_shader,
-            entry_point: Some("cs_main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-
-        let raycast_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("bind_group::raycast"),
-            layout: &raycast_bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: position_storage.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: index_storage.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: ray_ubo.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: result_ssbo.as_entire_binding() },
-            ],
-        });
+        let raycast_bind_group = raycast_kernel.bind(device, &[
+            wgpu::BindGroupEntry { binding: 0, resource: position_storage.binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: index_storage.binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: ray_ubo.binding() },
+            wgpu::BindGroupEntry { binding: 3, resource: result_ssbo.binding() },
+        ]);
 
         Self {
             pipeline,
@@ -753,9 +584,9 @@ impl MeshPass {
             index_storage,
             ray_ubo,
             result_ssbo,
-            staging_buffer,
-            compute_pipeline,
+            staging,
             raycast_bind_group,
+            raycast_kernel,
             model_matrix: Mat4::IDENTITY,
             selected: false,
         }
@@ -818,34 +649,31 @@ impl MeshPass {
         true
     }
 
-    pub fn dispatch_raycast(&self, device: &wgpu::Device, queue: &wgpu::Queue, ray: &Ray) -> wgpu::Buffer {
+    pub fn dispatch_raycast(&self, device: &wgpu::Device, queue: &wgpu::Queue, ray: &Ray) {
         let ray_uniform = GpuRayUniform::from(ray);
-        queue.write_buffer(&self.ray_ubo, 0, bytemuck::cast_slice(&[ray_uniform]));
+        self.ray_ubo.write(queue, &ray_uniform);
 
         let reset = GpuHitResult { hit: 0, t_bits: f32::INFINITY.to_bits() };
-        queue.write_buffer(&self.result_ssbo, 0, bytemuck::cast_slice(&[reset]));
+        self.result_ssbo.write(queue, &reset);
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("encoder::raycast"),
         });
 
-        {
-            let num_tris = self.mesh_indices.len() / 3;
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("compute::raycast"),
-                timestamp_writes: None,
-            });
-            cpass.set_pipeline(&self.compute_pipeline);
-            cpass.set_bind_group(0, &self.raycast_bind_group, &[]);
-            cpass.dispatch_workgroups((num_tris as u32 + 63) / 64, 1, 1);
-        }
+        let num_tris = self.mesh_indices.len() / 3;
+        self.raycast_kernel.dispatch(
+            &mut encoder,
+            &self.raycast_bind_group,
+            ((num_tris as u32 + 63) / 64, 1, 1),
+        );
 
-        let result_size = std::mem::size_of::<GpuHitResult>() as u64;
-        encoder.copy_buffer_to_buffer(&self.result_ssbo, 0, &self.staging_buffer, 0, result_size);
+        self.staging.copy_from(&mut encoder, &self.result_ssbo);
 
         queue.submit(Some(encoder.finish()));
+    }
 
-        self.staging_buffer.clone()
+    pub fn staging(&self) -> &Readback<GpuHitResult> {
+        &self.staging
     }
 }
 

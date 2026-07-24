@@ -1,5 +1,6 @@
 mod camera;
 mod gizmo;
+mod gpu;
 mod half_edge;
 mod moveable;
 mod pass;

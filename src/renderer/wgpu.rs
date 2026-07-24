@@ -10,7 +10,7 @@ use super::pass::RenderPass;
 use super::passes::grid_pass::GridPass;
 use super::passes::line_pass::LinePass;
 use super::passes::image_pass::ImagePass;
-use super::passes::mesh_pass::{MeshPass, GpuHitResult};
+use super::passes::mesh_pass::MeshPass;
 use super::ray::Ray;
 
 enum Selection {
@@ -348,19 +348,14 @@ impl WgpuRenderer {
             origin: inv_model.transform_point3(ray.origin),
             direction: inv_model.transform_vector3(ray.direction),
         };
-        let staging = self.mesh_pass.dispatch_raycast(&self.device, &self.queue, &model_ray);
-        let staged = staging.clone();
-        staging.map_async(wgpu::MapMode::Read, .., move |_| {
-            let data = staged.get_mapped_range(..);
-            let hr: &GpuHitResult = bytemuck::from_bytes(&data);
+        self.mesh_pass.dispatch_raycast(&self.device, &self.queue, &model_ray);
+        self.mesh_pass.staging().request(move |hr| {
             super::GPU_RAYCAST_RESULT.with(|r| {
                 *r.borrow_mut() = Some(crate::renderer::GpuRaycastOutcome {
                     hit: hr.hit != 0,
                     t: f32::from_bits(hr.t_bits),
                 });
             });
-            drop(data);
-            staged.unmap();
         });
     }
 
