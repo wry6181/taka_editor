@@ -1,5 +1,6 @@
 mod file_loader;
 mod renderer;
+mod ui;
 
 use std::cell::RefCell;
 use wasm_bindgen::JsCast;
@@ -34,6 +35,7 @@ pub fn run() {
 
     resize_canvas(&canvas);
     renderer::init_renderer(canvas.clone());
+    ui::init();
 
     let canvas_cb = canvas.clone();
     let cb = Closure::wrap(Box::new(move || {

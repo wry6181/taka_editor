@@ -546,5 +546,37 @@ impl WgpuRenderer {
     pub fn gizmo_name(&self) -> &'static str {
         self.gizmo.name()
     }
+
+    pub fn selection_name(&self) -> &'static str {
+        match self.selection {
+            Selection::Mesh => "Mesh",
+            Selection::Image => "Image",
+            Selection::None => "",
+        }
+    }
+
+    pub fn selection_position(&self) -> Option<glam::Vec3> {
+        match self.selection {
+            Selection::Mesh => {
+                let m = self.mesh_pass.model_matrix();
+                let t = m.w_axis.truncate();
+                Some(t)
+            }
+            Selection::Image => {
+                let m = self.image_pass.model_matrix();
+                let t = m.w_axis.truncate();
+                Some(t)
+            }
+            Selection::None => None,
+        }
+    }
+
+    pub fn selection_bounding_size(&self) -> Option<f32> {
+        match self.selection {
+            Selection::Mesh => Some(self.mesh_pass.bounding_size()),
+            Selection::Image => Some(self.image_pass.bounding_size()),
+            Selection::None => None,
+        }
+    }
 }
 

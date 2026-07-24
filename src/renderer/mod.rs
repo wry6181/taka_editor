@@ -117,6 +117,21 @@ impl Renderer {
         self.inner.deselect_mesh();
     }
 
+    pub fn gizmo_name(&self) -> &'static str {
+        self.inner.gizmo_name()
+    }
+
+    pub fn selection_name(&self) -> &'static str {
+        self.inner.selection_name()
+    }
+
+    pub fn selection_position(&self) -> Option<glam::Vec3> {
+        self.inner.selection_position()
+    }
+
+    pub fn selection_bounding_size(&self) -> Option<f32> {
+        self.inner.selection_bounding_size()
+    }
 }
 
 pub struct GpuRaycastOutcome {
@@ -196,17 +211,9 @@ fn format_mat4(label: &str, m: glam::Mat4) -> String {
     )
 }
 
-fn update_debug_overlay(r: &Renderer) {
+fn update_debug_overlay(r: &Renderer, fps: f64) {
     let Some(el) = get_debug_overlay() else { return };
     let view = r.get_camera_info();
-
-    let fps = FPS_STATE.with(|f| {
-        let now = web_sys::window()
-            .and_then(|w| w.performance())
-            .map(|p| p.now())
-            .unwrap_or(0.0);
-        f.borrow_mut().tick(now)
-    });
 
     let text = format!(
         "FPS: {:.0}\n{}\n",
@@ -307,8 +314,29 @@ pub fn start_render_loop() {
                     }
                 });
 
+                let fps = FPS_STATE.with(|f| {
+                    let now = web_sys::window()
+                        .and_then(|w| w.performance())
+                        .map(|p| p.now())
+                        .unwrap_or(0.0);
+                    f.borrow_mut().tick(now)
+                });
+
                 r.render();
-                update_debug_overlay(r);
+                update_debug_overlay(r, fps);
+                let gizmo_mode = r.gizmo_name();
+                let sel_info = if r.selection_name().is_empty() {
+                    None
+                } else {
+                    Some(crate::ui::SelectionInfo {
+                        name: r.selection_name().to_string(),
+                        pos_x: r.selection_position().map(|v| v.x).unwrap_or(0.0),
+                        pos_y: r.selection_position().map(|v| v.y).unwrap_or(0.0),
+                        pos_z: r.selection_position().map(|v| v.z).unwrap_or(0.0),
+                        size: r.selection_bounding_size().unwrap_or(0.0),
+                    })
+                };
+                crate::ui::update(sel_info, gizmo_mode);
             }
         });
 
@@ -340,4 +368,28 @@ pub fn add_image(image: TakaImage) {
     if !applied {
         PENDING_IMAGE.with(|p| *p.borrow_mut() = Some(image));
     }
+}
+
+pub fn set_gizmo_translate() {
+    RENDERER.with(|rc| {
+        if let Some(r) = rc.borrow_mut().as_mut() {
+            r.set_gizmo_translate();
+        }
+    });
+}
+
+pub fn set_gizmo_rotate() {
+    RENDERER.with(|rc| {
+        if let Some(r) = rc.borrow_mut().as_mut() {
+            r.set_gizmo_rotate();
+        }
+    });
+}
+
+pub fn set_gizmo_scale() {
+    RENDERER.with(|rc| {
+        if let Some(r) = rc.borrow_mut().as_mut() {
+            r.set_gizmo_scale();
+        }
+    });
 }
