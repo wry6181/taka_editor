@@ -1,4 +1,5 @@
 mod camera;
+mod gizmo;
 mod half_edge;
 mod moveable;
 mod pass;
@@ -85,6 +86,18 @@ impl Renderer {
 
     pub fn toggle_select_image(&mut self) {
         self.inner.toggle_select_image();
+    }
+
+    pub fn set_gizmo_translate(&mut self) {
+        self.inner.set_gizmo_mode(crate::renderer::gizmo::GizmoMode::new_translate());
+    }
+
+    pub fn set_gizmo_rotate(&mut self) {
+        self.inner.set_gizmo_mode(crate::renderer::gizmo::GizmoMode::new_rotate());
+    }
+
+    pub fn set_gizmo_scale(&mut self) {
+        self.inner.set_gizmo_mode(crate::renderer::gizmo::GizmoMode::new_scale());
     }
 
     pub fn mesh_is_selected(&self) -> bool {

@@ -288,4 +288,8 @@ impl Moveable for ImagePass {
             (world[3], world[0], color),
         ]
     }
+
+    fn gizmo_axes(&self) -> [bool; 3] {
+        [true, true, false]
+    }
 }

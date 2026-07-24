@@ -187,6 +187,27 @@ pub fn run() {
                 }
             });
         }
+        if key == "1" {
+            renderer::RENDERER.with(|rc| {
+                if let Some(r) = rc.borrow_mut().as_mut() {
+                    r.set_gizmo_translate();
+                }
+            });
+        }
+        if key == "2" {
+            renderer::RENDERER.with(|rc| {
+                if let Some(r) = rc.borrow_mut().as_mut() {
+                    r.set_gizmo_rotate();
+                }
+            });
+        }
+        if key == "3" {
+            renderer::RENDERER.with(|rc| {
+                if let Some(r) = rc.borrow_mut().as_mut() {
+                    r.set_gizmo_scale();
+                }
+            });
+        }
     }) as Box<dyn FnMut(_)>);
     window
         .add_event_listener_with_callback("keydown", on_keydown.as_ref().unchecked_ref())

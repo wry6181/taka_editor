@@ -4,7 +4,8 @@ use web_sys::HtmlCanvasElement;
 use wgpu::SurfaceTarget;
 
 use super::camera::Camera;
-use super::moveable::{Gizmo, Moveable};
+use super::gizmo::{Gizmo, GizmoMode};
+use super::moveable::Moveable;
 use super::pass::RenderPass;
 use super::passes::grid_pass::GridPass;
 use super::passes::line_pass::LinePass;
@@ -55,7 +56,7 @@ pub struct WgpuRenderer {
     gpu_raycast_active: bool,
     show_mesh: bool,
     selection: Selection,
-    gizmo: Gizmo,
+    gizmo: GizmoMode,
 }
 
 impl WgpuRenderer {
@@ -165,7 +166,7 @@ impl WgpuRenderer {
             gpu_raycast_active: false,
             show_mesh: true,
             selection: Selection::None,
-            gizmo: Gizmo::new(),
+            gizmo: GizmoMode::new_translate(),
         })
     }
 
@@ -318,19 +319,8 @@ impl WgpuRenderer {
         };
         if let Some(movable) = selected {
             let model = movable.model_matrix();
-            let center = model.transform_point3(movable.center());
-            let axis_len = (movable.bounding_size() * 0.8).max(2.0);
-
             all.extend(movable.gizmo_lines(&model));
-
-            let gc = center;
-            all.push((gc, gc + Vec3::X * axis_len, Vec3::new(1.0, 0.0, 0.0)));
-            all.push((gc, gc + Vec3::Y * axis_len, Vec3::new(0.0, 1.0, 0.0)));
-            all.push((gc, gc + Vec3::Z * axis_len, Vec3::new(0.0, 0.0, 1.0)));
-            let r = (axis_len * 0.04).max(0.06);
-            all.extend(Self::wireframe_sphere(gc + Vec3::X * axis_len, r, Vec3::new(1.0, 0.0, 0.0), 8));
-            all.extend(Self::wireframe_sphere(gc + Vec3::Y * axis_len, r, Vec3::new(0.0, 1.0, 0.0), 8));
-            all.extend(Self::wireframe_sphere(gc + Vec3::Z * axis_len, r, Vec3::new(0.0, 0.0, 1.0), 8));
+            all.extend(self.gizmo.axis_lines(movable, model));
         }
 
         self.line_pass.set_lines(&self.device, &self.queue, &all);
@@ -443,30 +433,39 @@ impl WgpuRenderer {
         let Some(movable) = movable else { return false };
 
         if let Some(axis) = self.gizmo.hit_test(movable, ndc_x, ndc_y, view, proj, 0.04) {
-            self.gizmo.drag_axis = Some(axis);
-            let center = movable.model_matrix().transform_point3(movable.center());
-            self.gizmo.start_drag((px, py), center, movable.model_matrix());
+            self.gizmo.start_drag(axis, movable, (px, py));
             return true;
         }
         false
     }
 
     pub fn handle_mousemove(&mut self, px: f64, py: f64) {
-        let Some(axis) = self.gizmo.drag_axis else { return };
         self.debug_ray_hit = None;
 
+        let w = self.config.width as f64;
+        let h = self.config.height as f64;
+        let ndc_x = (2.0 * px / w - 1.0) as f32;
+        let ndc_y = (1.0 - 2.0 * py / h) as f32;
         let view = self.camera.get_view_matrix();
         let proj = self.camera.get_projection_matrix();
-        let (vw, vh) = (self.config.width, self.config.height);
 
         let movable: Option<&mut dyn Moveable> = match &mut self.selection {
             Selection::Mesh => Some(&mut self.mesh_pass as &mut dyn Moveable),
             Selection::Image => Some(&mut self.image_pass as &mut dyn Moveable),
             Selection::None => None,
         };
-        let Some(movable) = movable else { return };
+        let Some(movable) = movable else {
+            self.gizmo.set_hovered(None);
+            return;
+        };
 
-        self.gizmo.apply_drag(movable, axis, px, py, vw, vh, view, proj);
+        if self.gizmo.is_dragging() {
+            let (vw, vh) = (self.config.width, self.config.height);
+            self.gizmo.apply_drag(movable, px, py, vw, vh, view, proj);
+        } else {
+            let hover = self.gizmo.hit_test(movable, ndc_x, ndc_y, view, proj, 0.04);
+            self.gizmo.set_hovered(hover);
+        }
         self.flush_lines();
     }
 
@@ -542,6 +541,15 @@ impl WgpuRenderer {
         self.mesh_pass.set_selected(false);
         self.image_pass.set_selected(matches!(self.selection, Selection::Image));
         self.flush_lines();
+    }
+
+    pub fn set_gizmo_mode(&mut self, mode: GizmoMode) {
+        self.gizmo = mode;
+        self.flush_lines();
+    }
+
+    pub fn gizmo_name(&self) -> &'static str {
+        self.gizmo.name()
     }
 }
 
